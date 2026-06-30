@@ -1,0 +1,15 @@
+[submodule "reconstruction/modules/tapnet"]
+	path = reconstruction/modules/tapnet
+	url = https://github.com/malik-group/tapnet.git
+[submodule "reconstruction/modules/sam-3d-objects"]
+	path = reconstruction/modules/sam-3d-objects
+	url = https://github.com/malik-group/sam-3d-objects.git
+[submodule "reconstruction/modules/Fast-SAM3D"]
+	path = reconstruction/modules/Fast-SAM3D
+	url = https://github.com/malik-group/Fast-SAM3D.git
+[submodule "reconstruction/modules/HaWoR"]
+	path = reconstruction/modules/HaWoR
+	url = https://github.com/malik-group/HaWoR.git
+[submodule "reconstruction/modules/sam3"]
+	path = reconstruction/modules/sam3
+	url = https://github.com/malik-group/sam3.git

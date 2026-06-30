@@ -1,0 +1,87 @@
+# Top-level upload safety for the video -> GVHMR -> PHC -> GMR pipeline.
+
+# Runtime outputs and datasets
+dataset*/
+show/
+show*/
+output_dir/
+data till now/
+your_video.mp4
+
+# Duplicate or older worktrees not used by the documented entry scripts
+4D-Humans-main/
+PHC-master/
+locomotion_pipeline/
+gvhmr/
+
+# Generated outputs inside component repos
+GMR-master/output/
+GVHMR-main/inputs/
+GVHMR-main/outputs/
+GVHMR-main/tmp*/
+locomotion_pipeline-main/output*/
+locomotion_pipeline-main/data/
+locomotion_pipeline-main/cache/
+phc-dev-felix-pipeline/output/
+phc-dev-felix-pipeline/data/custom_motions/
+phc-dev-felix-pipeline/data/smpl/
+phc-dev-felix-pipeline/isaacgym/
+phc-dev-felix-pipeline/runs/
+
+# External repositories restored by scripts/bootstrap_external_repos.sh
+GVHMR-hand/GVHMR-main/third-party/
+GMR-master/third_party/robot_hands/
+phc-deps/
+do-as-i-do-main/reconstruction/modules/
+do-as-i-do-main/reconstruction/weights/
+
+# License-restricted body-model distribution
+mano_v1_2/
+
+# Large model/checkpoint/body-model files
+*.ckpt
+*.pth
+*.pt
+*.pkl
+*.npz
+
+# Rendered media and archives
+*.mp4
+*.mov
+*.avi
+*.webm
+*.gif
+*.zip
+*.tar
+*.tar.gz
+*.7z
+
+# Python/cache/build noise
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.cache/
+.ipynb_checkpoints/
+
+# Local credentials and experiment-only configuration
+.env
+.env.*
+!.env.example
+configs/secrets.env
+configs/secrets.*.env
+configs/pipelines/*.local.yaml
+
+# IDE/OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+*.swo
+
+# Generated MuJoCo composition files
+GMR-master/assets/**/gmr_dynamic_object_*.xml
+GMR-master/assets/**/h1_sharpa_visual_*.xml

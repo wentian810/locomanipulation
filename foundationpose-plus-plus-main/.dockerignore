@@ -1,0 +1,52 @@
+# FoundationPose++ Docker 忽略文件
+
+# Git
+.git
+.gitignore
+.gitmodules
+
+# 大权重文件 (运行时通过 volume 挂载，不嵌入镜像)
+FoundationPose/weights/
+sam-hq/pretrained_checkpoints/
+Qwen2-VL/weights/
+Cutie/saves/
+
+# 数据和输出 (运行时挂载)
+realsense_data/
+test_data/
+output/
+logs/
+
+# pytorch3d / nvdiffrast 源码需要 COPY 进镜像编译，不忽略
+!pytorch3d/
+!nvdiffrast/
+
+# 编译产物
+FoundationPose/mycpp/build/
+FoundationPose/bundlesdf/mycuda/build/
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.egg-info/
+**/*.so
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# macOS
+.DS_Store
+
+# 文档图片
+.figs/
+
+# Conda (镜像自带 conda，不需要打包本地的)
+*.tar.gz
+*.zip
+
+# 视频 / 临时文件
+*.mp4
+*.avi
+*.tmp

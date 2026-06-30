@@ -1,0 +1,47 @@
+# FoundationPose++ Docker Compose
+#
+# 使用方式:
+#   docker compose build
+#   docker compose up -d
+#   docker compose exec fpp bash
+#
+# 或一步到位:
+#   docker compose run --rm fpp bash
+
+services:
+  fpp:
+    image: foundationpose-pp:latest
+    container_name: fpp
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # 使用 docker 运行而非 compose 时用 docker run --gpus all
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    stdin_open: true
+    tty: true
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CUDA_HOME=/usr/local/cuda
+      - PROJECT_ROOT=/workspace
+    volumes:
+      # 权重 (必须先下载到宿主机)
+      - ./FoundationPose/weights:/workspace/FoundationPose/weights
+      - ./sam-hq/pretrained_checkpoints:/workspace/sam-hq/pretrained_checkpoints
+      - ./Qwen2-VL/weights:/workspace/Qwen2-VL/weights
+      - ./Cutie/saves:/workspace/Cutie/saves
+
+      # 数据
+      - ./realsense_data:/workspace/realsense_data
+      - ./test_data:/workspace/test_data
+
+      # 代码 (开发时映射源码，修改后无需重建镜像)
+      - ./src:/workspace/src
+      - ./scripts:/workspace/scripts
+    working_dir: /workspace
+    command: /bin/bash

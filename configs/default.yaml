@@ -1,0 +1,128 @@
+schema_version: 1
+
+# Relative paths are resolved against this YAML file.
+project_root: ..
+
+input:
+  dataset_dir: dataset_new6
+  extensions: [".mp4", ".avi", ".mov", ".mkv", ".m4v"]
+  clip_filter: ""
+  work_video:
+    enabled: true
+    directory: dataset_new6_work_1280
+    width: 1280
+    height: 960
+    crf: 18
+    force: false
+
+output:
+  root: output_dir/dataset_new6_hand4wholepp_directmano_gmr_sharpa_aligned
+
+resume:
+  skip_existing: true
+  force_hand_preprocess: false
+  force_locomotion: false
+  force_smoothing: false
+  force_phc: false
+  force_gmr: true
+
+human:
+  backend: hand4wholepp       # hamer | hand4wholepp | wilor
+  constraint_profile: conservative
+  gvhmr_batch_size: 4
+  hand_batch_size: 1
+  vitpose_image_scale: 1.0
+  low_memory: true
+  isolate_hand_process: true
+  filters:
+    wrist: false
+    temporal: true
+    fingers: true
+  diagnostics: true
+
+locomotion:
+  enabled: true
+  smooth_window: 9
+
+phc:
+  enabled: true
+
+gmr:
+  enabled: true
+  hand_model: sharpa          # sharpa | g1 | brainco
+  source: smoothed            # converted | smoothed | phc_smoothed | auto
+  target_fps: 30
+  camera_source: gvhmr
+  render: true
+  composite_2x2: true
+  mujoco_gl: osmesa
+  render_width: 960
+  render_height: 720
+
+object:
+  enabled: false
+
+  # RGB-only 推荐 monocular；有对齐深度时可用 foundationpose。
+  mode: monocular             # monocular | foundationpose
+  only_configured_clips: true
+  rerender_gmr_after_import: true
+
+  collision:
+    method: auto              # auto | coacd | convex-hull
+    density_kg_m3: 600.0
+    mass_kg: null
+
+  overlay:
+    enabled: true
+    alpha: 0.82
+
+  monocular:
+    run_reconstruction: true
+    work_root: object_work/do_as_i_do
+    reconstruction_script: do-as-i-do-main/reconstruction/run_pipeline.sh
+    mesh_backend: sam3d        # sam3d | hunyuan
+    hunyuan_face_count: 100000
+    hunyuan_timeout: 900
+    hunyuan_region: ap-guangzhou
+    num_pose_samples: 25
+    euler_steps: 25
+    torch_compile: true
+    default_object_name: object
+    default_reference_frame: 0
+    default_anchor_hand: right
+
+  foundationpose:
+    # 可使用 {clip} 占位符，例如 foundationpose-plus-plus-main/test_data/{clip}
+    result_dir_template: foundationpose-plus-plus-main/test_data/{clip}
+
+  # 每个片段的物体名称、参考帧和动态释放帧通常不同。
+  clips:
+    Date02_Sub02_chairwood_hand.0.color:
+      object_name: chair
+      reference_frame: 200
+      anchor_hand: right
+      dynamic_release_frame: 0
+
+  dynamic_validation:
+    enabled: false
+    substeps: 16
+    lift_threshold_m: 0.05
+    object_floor_collision: true
+    render_video: true
+
+runtime:
+  conda_base: ${HOME}/miniconda3
+  python: ${HOME}/miniconda3/envs/locomotion/bin/python
+  cuda_visible_devices: "0"
+  # SAM3 的物体点选会打开 OpenCV 窗口；当前桌面会话通常是 :0。
+  sam3_display: ":0"
+  conda_envs:
+    sam3: sam3
+    sam3d: sam3d
+    hawor: hawor
+    tapnet: tapnet
+
+# 高级参数可直接覆盖现有 Bash 环境变量。不要在此保存任何云密钥。
+environment:
+  GVHMR_HAND4WHOLEPP_JOINT_SOURCE: direct_mano
+  GMR_HAND_INVALID_MODE: interp

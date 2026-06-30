@@ -1,0 +1,44 @@
+.
+├── _record
+│   └── record.md
+├── assets
+│   └── smplh
+│       ├── kid_template.npy
+│       ├── SMPLH_female.pkl
+│       ├── SMPLH_male.pkl
+│       └── SMPLH_NEUTRAL.pkl
+├── code
+│   ├── __init__.py
+│   ├── optim
+│   │   ├── optimizer.py
+│   │   └── smplh_provider.py
+│   ├── scripts
+│   │   ├── du_data.txt
+│   │   ├── mc_scaffold_from_ls.py
+│   │   ├── run_fsys_sync.sh
+│   │   └── unzip_bash.sh
+│   └── utils
+│       ├── __init__.py
+│       ├── log_utils.py
+│       └── statics.py
+├── log
+├── output
+│   ├── zitai_n10000_idx000-mv_height
+│   │   ├── record.log
+│   │   └── sequence_statistics.csv
+│   ├── zitai_n10000_idx000_s0.5-mv-height
+│   │   ├── record.log
+│   │   └── sequence_statistics.csv
+│   ├── zitai_n10000_idx001_mv-height
+│   │   ├── record.log
+│   │   └── sequence_statistics.csv
+│   └── zitai_n10000_idx002_mv-height
+│       ├── record.log
+│       └── sequence_statistics.csv
+├── README.md
+├── fsys_struct.log
+├── optim_output.log
+├── numpy_version.txt
+├── requirement.txt
+├── install.sh
+└── run_optim.sh

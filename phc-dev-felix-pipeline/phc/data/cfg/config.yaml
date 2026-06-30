@@ -1,0 +1,71 @@
+defaults:
+  - _self_
+  - env: env_im
+  - robot: smpl_humanoid
+  - learning: im
+  - sim: default_sim
+  - control: default_control
+  - domain_rand: default_dr
+
+project_name: "PHC"
+notes: "Default Notes"
+exp_name: &exp_name humanoid_smpl
+headless: True
+seed: 0
+no_log: False
+resume_str: null
+num_threads: 64
+test: False
+dataset: False
+mlp: False
+output_path: output/HumanoidIm/${exp_name}
+torch_deterministic: False
+epoch: 0
+im_eval: False
+horovod: False # Use horovod for multi-gpu training, have effect only with rl_games RL library
+rl_device: "cuda:0"
+device: "cuda"
+device_id: 0
+metadata: false
+play: ${test}
+train: True
+collect_dataset: False
+disable_multiprocessing: True
+
+
+####### Testing Configs. ########
+server_mode: False
+has_eval: True
+no_virtual_display: True
+render_o3d: False
+debug: False
+follow: False
+add_proj: False
+real_traj: False
+auto_record_motion: False
+auto_quit_after_record: False
+record_states_only: False
+seq_export_states: False
+o3d_camera_mode: "level"
+o3d_camera_elevation_deg: 26.0
+o3d_camera_zoom: 0.82
+o3d_camera_follow: True
+o3d_camera_follow_alpha: 0.10
+o3d_camera_lookat_height_ratio: 0.38
+o3d_camera_lookat_z_offset: 0.0
+o3d_floor_style: "solid"
+o3d_floor_z: -0.03
+repair_reference_root: ""
+repair_motion_root: ""
+repair_output_root: ""
+repair_state_root: "output/states"
+repair_output_gravity_axis: "neg_z"
+phc_fix_height: "full_fix"
+
+hydra:
+  job:
+    name: ${exp_name}
+    env_set:
+      OMP_NUM_THREADS: 1
+  run:
+    dir: output/HumanoidIm/${exp_name}

@@ -1,0 +1,20 @@
+services:
+  project_lin1: # Your project's name
+    # image: nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04
+    image: img_gvhmr2smpl
+    runtime: nvidia
+    container_name: ct_GVHMR2smpl # Your container's name
+    # user: linycs_d
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all  # nums or "all"
+    volumes:
+      - /media/linycs/ssd1T/projects_dataset:/workspace/projects_dataset  # Map working directory
+      - /media/linycs/ssd1T/datasets:/workspace/datasets  # Map datasets directory
+      - /media/linycs/ssd1T/shared_files_docker:/workspace/shared_files_docker
+    ports:
+      - "18889:8889"  # Map host port 18888 to container port 8888 for jupyter notebooks
+    stdin_open: true
+    tty: true
+    ipc: host  # Share IPC namespace with host for large shared memory
+    # command: --user $(id -u) --name linycs linycs_d
+    # privileged: true  # Enable privileged mode for full access to host devices

@@ -1,0 +1,45 @@
+dataset_name: do_as_i_do
+embodiment_type: auto
+data_id: 0
+temperature: 1.0
+num_samples: 1024
+max_num_iterations: 32
+improvement_threshold: 0.01
+improvement_check_steps: 2
+
+sim_dt: 0.005
+ctrl_dt: 0.5
+horizon: 3.0
+ref_dt: 0.0333  # raw hand tracks (HaWoR) are ~30 FPS
+
+pos_rew_scale: 1.0
+rot_rew_scale: 0.3
+base_pos_rew_scale: 0.1
+base_rot_rew_scale: 0.03
+joint_rew_scale: 0.01
+terminal_rew_scale: 10.0
+penetration_penalty_scale: 3000.0
+penetration_margin: 0.005
+pedestal_penalty_scale: 0.5
+
+knot_dt: 0.2
+pos_noise_scale: 0.01
+rot_noise_scale: 0.01
+joint_noise_scale: 0.1
+
+final_noise_scale: 0.01
+first_ctrl_noise_scale: 1.0
+last_ctrl_noise_scale: 4.0
+
+warmup_duration: 3.0
+warmup_min_clearance: 0.1
+warmup_ref_base_interp_duration: 3.0
+warmup_ref_finger_interp_duration: 3.0
+warmup_ramp_duration: 0.0
+warmup_rew_multiplier: 0.1
+
+num_perturb_samples: 4
+perturb_force_scale: 0.5
+perturb_torque_scale: 0.5
+perturb_prob: 0.05
+perturb_continue_prob: 0.95

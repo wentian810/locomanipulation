@@ -1,0 +1,63 @@
+input:
+  target_dir: output_submit/batch1/zitai/zitai_n10000_idx000
+  file_pattern: "*/*.npz"
+  seqID_index: 1
+  overwrite: true
+
+output:
+  root: output
+  exp_dir:
+    prefix: test_optimizer_v2
+    suffix: null
+    use_timestamp: false
+  structure:
+    sub_dirs:
+      - log
+      - vis:
+        - init
+        - optim
+        - speed
+      - fail_filter
+      - fail_repair
+      - results_filter
+      - results_repair
+    concrete_dir: {}
+  fnames:
+    # optimized_result: "{seq_id}_optimized.npz"
+    record_csv: "sequence_statistics.csv"
+
+optimization:
+  gravity:
+    enabled: true
+    params:
+      gravity_axis: "y-"
+      height_scale: 1.0
+
+check:
+  penetration:
+    enabled: false
+    params:
+      depth_threshold: 0.1
+  speed:
+    enabled: false
+    params:
+      choices:
+        linear:
+          # velocity: None
+          acceleration: 14.7 # m/s^2, 1.5G
+        # angular:
+          # - velocity
+          # - acceleration
+    mode:
+      # MAD:
+        # mad_multiplier: 3.0
+      # ml:
+        # model_type: isolation_forest
+        # model_params:
+          # contamination: auto
+      __null__: null
+  gravity_alignment:
+    enabled: false
+    params:
+      gravity_axis: "y-"
+      scale: 1.2

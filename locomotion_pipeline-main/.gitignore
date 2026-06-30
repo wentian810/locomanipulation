@@ -1,0 +1,29 @@
+# checkpoint
+*.pkl
+
+# folder
+_record/
+.vscode/
+cache/
+data/
+output*/
+third_party/
+log/*
+
+# folder from others
+from_click/
+
+# external source
+libigl-python-bindings
+meshsdf_loss
+torch-mesh-isect
+
+# file
+.codex
+
+# cache
+__pycache__/
+*.pyc
+build/
+dist/
+*.egg-info/

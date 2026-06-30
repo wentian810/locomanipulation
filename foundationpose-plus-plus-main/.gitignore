@@ -1,0 +1,38 @@
+# 权重文件（通过 volume 挂载，不纳入版本管理）
+FoundationPose/weights/
+sam-hq/pretrained_checkpoints/
+Qwen2-VL/weights/
+Cutie/weights/
+
+# 源码库（docker build 时从上游 clone，不纳入本仓库）
+pytorch3d/
+nvdiffrast/
+transformers/
+
+# 数据和输出
+realsense_data/
+test_data/
+output/
+logs/
+
+# 编译产物
+FoundationPose/mycpp/build/
+FoundationPose/bundlesdf/mycuda/build/
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.egg-info/
+**/*.so
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 临时文件
+*.mp4
+*.avi
+*.tmp
+*.pth
+.figs/

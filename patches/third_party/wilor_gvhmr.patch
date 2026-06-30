@@ -1,0 +1,61 @@
+diff --git a/wilor/models/__init__.py b/wilor/models/__init__.py
+index e4119c5..9c5588e 100644
+--- a/wilor/models/__init__.py
++++ b/wilor/models/__init__.py
+@@ -4,6 +4,8 @@ from .wilor import WiLoR
+ from .discriminator import Discriminator
+ 
+ def load_wilor(checkpoint_path, cfg_path):
++    import gc
++    import torch
+     from pathlib import Path
+     from wilor.configs import get_config
+     print('Loading ', checkpoint_path)
+@@ -32,5 +34,30 @@ def load_wilor(checkpoint_path, cfg_path):
+         model_cfg.MANO.MEAN_PARAMS = './mano_data/mano_mean_params.npz'
+         model_cfg.freeze()
+ 
+-    model = WiLoR.load_from_checkpoint(checkpoint_path, strict=False, cfg=model_cfg)
++    # Lightning's load_from_checkpoint materializes this 2.4 GiB checkpoint
++    # in anonymous RAM in addition to the freshly-created model.  Together
++    # with the Hand4Whole++ network this can stall a 16 GiB workstation badly
++    # enough to require a hard reset.  Inference does not need Lightning's
++    # checkpoint migration or renderer, so map the tensors directly from disk
++    # and replace the initialized parameters without making a second copy.
++    model = WiLoR(cfg=model_cfg, init_renderer=False)
++    checkpoint = torch.load(
++        checkpoint_path,
++        map_location="cpu",
++        weights_only=True,
++        mmap=True,
++    )
++    incompatible = model.load_state_dict(
++        checkpoint["state_dict"],
++        strict=False,
++        assign=True,
++    )
++    if incompatible.missing_keys or incompatible.unexpected_keys:
++        print(
++            "WiLoR checkpoint compatibility: "
++            f"missing={len(incompatible.missing_keys)}, "
++            f"unexpected={len(incompatible.unexpected_keys)}"
++        )
++    del checkpoint
++    gc.collect()
+     return model, model_cfg
+diff --git a/wilor/models/wilor.py b/wilor/models/wilor.py
+index d1415d4..5a4df48 100644
+--- a/wilor/models/wilor.py
++++ b/wilor/models/wilor.py
+@@ -156,7 +156,10 @@ class WiLoR(pl.LightningModule):
+                                                    translation=pred_cam_t,
+                                                    focal_length=focal_length / self.cfg.MODEL.IMAGE_SIZE)
+         output['pred_keypoints_2d'] = pred_keypoints_2d.reshape(batch_size, -1, 2)
+-        
++
++        # Expose ViT feature map for downstream use (e.g. Hand4Whole-plus-plus integration)
++        output['img_feat'] = vit_out
++
+         return output
+ 
+     def compute_loss(self, batch: Dict, output: Dict, train: bool = True) -> torch.Tensor:

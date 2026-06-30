@@ -1,0 +1,7 @@
+numpy==1.26.4
+trimesh
+tqdm
+mkl==2024.0.0
+termcolor
+matplotlib
+scikit-learn

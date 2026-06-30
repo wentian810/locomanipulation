@@ -1,0 +1,34 @@
+diff --git a/common/utils/smpl_x.py b/common/utils/smpl_x.py
+index b1ec5e2..b30ea76 100644
+--- a/common/utils/smpl_x.py
++++ b/common/utils/smpl_x.py
+@@ -19,7 +19,11 @@ class SMPLX(object):
+         self.face = self.layer['neutral'].faces.astype(np.int64)
+         with open(osp.join(cfg.human_model_path, 'smplx', 'MANO_SMPLX_vertex_ids.pkl'), 'rb') as f:
+             self.hand_vertex_idx = pickle.load(f, encoding='latin1')
+-        self.face_vertex_idx = np.load(osp.join(cfg.human_model_path, 'smplx', 'SMPL-X__FLAME_vertex_ids.npy'))
++        face_vertex_path = osp.join(cfg.human_model_path, 'smplx', 'SMPL-X__FLAME_vertex_ids.npy')
++        if osp.isfile(face_vertex_path):
++            self.face_vertex_idx = np.load(face_vertex_path)
++        else:
++            self.face_vertex_idx = np.empty((0,), dtype=np.int64)
+         self.vert_neighbor_idxs = self.get_vert_neighbor()
+         self.hand_boundary_idx = {'right': self.hand_vertex_idx['right_hand'][mano.is_boundary['right']==1], 'left': self.hand_vertex_idx['left_hand'][mano.is_boundary['left']==1]}
+         self.vert_to_joint = self.layer['neutral'].J_regressor.numpy()
+diff --git a/main/model.py b/main/model.py
+index 118fb1b..0c2d772 100644
+--- a/main/model.py
++++ b/main/model.py
+@@ -204,8 +204,12 @@ class Model(nn.Module):
+             out['kpt_proj_orig'] = kpt_proj_orig
+             out['rhand_bbox'] = rhand_bbox
+             out['lhand_bbox'] = lhand_bbox
++            out['rhand_exist'] = rhand_exist
++            out['lhand_exist'] = lhand_exist
+             out['rmano_vert_cam'] = rmano_vert_cam
+             out['lmano_vert_cam'] = lmano_vert_cam
++            out['rhand_root_pose'] = rhand_root_pose
++            out['lhand_root_pose'] = lhand_root_pose
+             out['smplx_kpt_proj'] = kpt_proj
+             out['smplx_kpt_proj_orig'] = kpt_proj_orig
+             out['smplx_kpt_cam'] = kpt_cam

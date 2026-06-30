@@ -1,0 +1,4 @@
+[submodule "external/cuda-samples"]
+	path = external/cuda-samples
+	url = git@github.com:NVIDIA/cuda-samples.git
+

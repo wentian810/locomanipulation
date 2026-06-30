@@ -1,0 +1,21 @@
+# Model weights / checkpoints — fetched by setup/02_fetch_weights.sh, never committed
+weights/
+
+# Weights that live inside the submoduled repos (symlinked/downloaded at setup).
+modules/*/checkpoints/
+modules/HaWoR/weights/
+modules/HaWoR/thirdparty/*/weights/
+modules/HaWoR/_DATA/
+
+# Python
+**/__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+
+# Vendored sam3 package: drop generated outputs
+modules/sam3/output/
+
+# OS / editor
+.DS_Store
+*.swp

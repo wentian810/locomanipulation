@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.ruff_cache/
+
+# pipeline outputs
+outputs/
+tmp/
+*.mp4
+*.log
+MUJOCO_LOG.TXT

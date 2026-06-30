@@ -1,0 +1,43 @@
+# 管线专属配置：RGB-only + Hand4Whole++ + H1/Sharpa。
+# 加载优先级：
+# CLI > 环境变量 > 本文件 > configs/default.yaml
+
+input:
+  dataset_dir: dataset_new6
+  clip_filter: ""
+
+output:
+  root: output_dir/dataset_new6_rgb_monocular_hand4wholepp_sharpa
+
+human:
+  backend: hand4wholepp
+  constraint_profile: conservative
+  hand_batch_size: 1
+
+phc:
+  enabled: true
+
+gmr:
+  enabled: true
+  hand_model: sharpa
+  source: smoothed
+
+object:
+  enabled: true
+  mode: monocular
+  only_configured_clips: true
+  monocular:
+    mesh_backend: hunyuan
+    # RTX 4090 24GB 起步配置；显存足够时可恢复默认 25/25。
+    num_pose_samples: 8
+    euler_steps: 15
+    torch_compile: false
+  clips:
+    Date02_Sub02_chairwood_hand.0.color:
+      object_name: chair
+      reference_frame: 200
+      anchor_hand: right
+      dynamic_release_frame: 0
+
+  dynamic_validation:
+    enabled: false
