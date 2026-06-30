@@ -14,7 +14,7 @@ clone_pinned() {
     local destination="$1"
     local url="$2"
     local commit="$3"
-    local recursive="${4:-0}"
+    local submodules="${4:-none}"
 
     if [ -d "$destination/.git" ]; then
         log "reuse ${destination#$ROOT/}"
@@ -36,9 +36,22 @@ clone_pinned() {
         git -C "$destination" fetch origin "$commit"
     fi
     git -C "$destination" checkout --detach "$commit"
-    if [ "$recursive" = "1" ]; then
-        git -C "$destination" submodule update --init --recursive
-    fi
+    case "$submodules" in
+        none)
+            ;;
+        first)
+            # Do not recursively fetch optional viewer/toolchain dependencies
+            # such as Pangolin's vcpkg checkout.
+            git -C "$destination" submodule update --init
+            ;;
+        recursive)
+            git -C "$destination" submodule update --init --recursive
+            ;;
+        *)
+            echo "Unknown submodule mode: $submodules" >&2
+            exit 2
+            ;;
+    esac
 }
 
 apply_patch_once() {
@@ -60,12 +73,12 @@ bootstrap_core() {
         "$gvhmr/third-party/DPVO" \
         "https://github.com/princeton-vl/DPVO.git" \
         "859bbbfdac6c6185f345003b3c473901fcd13ace" \
-        1
+        first
     clone_pinned \
         "$gvhmr/third-party/hamer" \
         "https://github.com/geopavlakos/hamer.git" \
         "3a01849f4148352e9260b69bf28b65d1671a4905" \
-        1
+        first
     clone_pinned \
         "$gvhmr/third-party/WiLoR" \
         "https://github.com/rolpotamias/WiLoR.git" \
