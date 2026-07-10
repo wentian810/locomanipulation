@@ -1,0 +1,93 @@
+# Data & datasets
+dataset_new6/
+dataset_new6_work_1280/
+output_dir/
+logs/
+debug_frames/
+
+# Checkpoints & models (large binary files)
+*.pth
+*.ckpt
+*.pt
+!requirements*.pt
+gvhmr/
+models/
+smpl/
+mano_v1_2/
+phc_3/
+phc_comp_3/
+phc-deps/
+assets/body_models/
+
+# IsaacGym & binaries
+isaacgym/
+*.so
+*.o
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.eggs/
+*.egg-info/
+
+# Conda
+miniconda3/
+*.conda
+
+# Documents & papers
+*.pdf
+*.docx
+*.doc
+*.pptx
+*.xlsx
+_extracted_text/
+_ppt_media/
+
+# Images (non-code)
+*.png
+*.jpg
+*.jpeg
+*.gif
+!assets/**/*.png
+!assets/**/*.jpg
+
+# Archives
+*.zip
+*.tar.gz
+*.7z
+
+# IDE
+.vscode/
+.idea/
+
+# Misc
+.miktex/
+temp_*
+__MACOSX/
+.DS_Store
+
+# PHC output
+phc-dev-felix-pipeline/output/
+phc-dev-felix-pipeline/isaacgym/
+
+# Codex backups
+.codex_backups/
+# Body model files (large binaries)
+**/body_models/
+**/assets/smpl/
+**/assets/smplh/
+**/assets/smplx/
+**/mano_v1_2/
+**/mano_data/
+**/checkpoints/
+**/pretrained_models/
+**/_DATA/
+**/hamer_ckpts/
+
+# Large NPZ/PKL model files anywhere
+*.npz
+*.pkl
+
+# But keep robot motion pkl files
+!*robot_motion*.pkl

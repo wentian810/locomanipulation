@@ -1,0 +1,39 @@
+# 原始人体-only 流程：GVHMR -> Locomotion -> PHC -> GMR/Sharpa -> 2x2。
+# 本配置保留工作区，适合检查；批处理清理版见 human_sharpa_batch.yaml。
+
+input:
+  dataset_dir: dataset_new6
+  clip_filter: ""
+
+output:
+  root: output_dir/dataset_new6_hand4wholepp_directmano_gmr_sharpa_aligned
+
+human:
+  backend: hand4wholepp
+  constraint_profile: conservative
+  hand_batch_size: 1
+
+phc:
+  enabled: true
+
+gmr:
+  enabled: true
+  hand_model: sharpa
+  source: auto
+  render: true
+  composite_2x2: true
+
+object:
+  enabled: false
+
+product:
+  enabled: true
+  root: assets/dataset_new6_human_sharpa
+  export_after_stages: [human, all]
+  include_camera: true
+  include_preview: true
+  require_preview: true
+  object_policy: exclude
+  retention:
+    prune_workspace_after_export: false
+    prune_object_work_after_export: false

@@ -1,0 +1,40 @@
+# 人体-only 工程化批处理：资产校验成功后删除每个 clip 的运行工作区。
+# output.root 是可删除的 scratch；永久结果只在 product.root。
+
+input:
+  dataset_dir: dataset_new6
+  clip_filter: ""
+
+output:
+  root: scratch/dataset_new6_human_sharpa
+
+human:
+  backend: hand4wholepp
+  constraint_profile: conservative
+  hand_batch_size: 1
+  diagnostics: false
+
+phc:
+  enabled: true
+
+gmr:
+  enabled: true
+  hand_model: sharpa
+  source: auto
+  render: true
+  composite_2x2: true
+
+object:
+  enabled: false
+
+product:
+  enabled: true
+  root: assets/dataset_new6_human_sharpa
+  export_after_stages: [human, all]
+  include_camera: true
+  include_preview: true
+  require_preview: true
+  object_policy: exclude
+  retention:
+    prune_workspace_after_export: true
+    prune_object_work_after_export: false

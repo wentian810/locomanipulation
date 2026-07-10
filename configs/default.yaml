@@ -1,0 +1,224 @@
+schema_version: 1
+
+# Relative paths are resolved against this YAML file.
+project_root: ..
+
+input:
+  dataset_dir: dataset_new6
+  extensions: [".mp4", ".avi", ".mov", ".mkv", ".m4v"]
+  clip_filter: ""
+  work_video:
+    enabled: true
+    directory: dataset_new6_work_1280
+    width: 1280
+    height: 960
+    crf: 18
+    force: false
+
+output:
+  root: output_dir/dataset_new6_hand4wholepp_directmano_gmr_sharpa_aligned
+
+# 无 GT 的批处理质量分层；输出每 clip quality_report.json 和根目录汇总。
+quality_evaluation:
+  enabled: true
+  run_after_stages: [human, object, all]
+  require_for_product: true
+  pass_score: 80.0
+  projection_samples: 40
+  weights:
+    human_only:
+      files: 15
+      human: 25
+      hands: 35
+      gmr: 15
+      visualization: 10
+    object:
+      files: 10
+      human: 15
+      hands: 20
+      object: 20
+      contact: 20
+      dynamics: 15
+  thresholds:
+    frame_count_warn_ratio: 0.995
+    frame_count_fail_ratio: 0.98
+    hand_valid_warn_ratio: 0.85
+    hand_valid_fail_ratio: 0.50
+    hand_reproj_p90_warn_relative: 0.35
+    hand_reproj_p90_fail_relative: 0.60
+    hand_spike_warn_ratio: 0.03
+    hand_spike_fail_ratio: 0.10
+    hand_repaired_warn_ratio: 0.35
+    hand_repaired_fail_ratio: 0.60
+    root_speed_p95_warn_mps: 3.0
+    root_speed_p95_fail_mps: 6.0
+    joint_limit_tolerance_rad: 0.001
+    joint_limit_violation_warn_ratio: 0.001
+    joint_limit_violation_fail_ratio: 0.01
+    object_valid_warn_ratio: 0.80
+    object_valid_fail_ratio: 0.35
+    object_position_jump_m: 0.20
+    object_rotation_jump_deg: 45.0
+    object_jump_warn_ratio: 0.002
+    object_jump_fail_ratio: 0.02
+    projection_iou_warn: 0.30
+    projection_iou_fail: 0.15
+    contact_distance_m: 0.15
+    contact_frame_pass_ratio: 0.10
+    contact_frame_fail_ratio: 0.01
+
+# 最终资产包与运行工作区分离。默认关闭，专用 pipeline YAML 决定何时导出/清理。
+product:
+  enabled: false
+  root: assets/pipeline_products
+  export_after_stages: []
+  include_camera: true
+  include_phc_motion: true
+  include_preview: true
+  require_preview: false
+  object_policy: if_valid       # exclude | if_valid | require_valid
+  minimum_quality_status: warn  # pass | warn；fail 永不进入商品包
+  require_commercial_clearance: false
+  rights:
+    source_video_commercial_rights: false
+    subject_release: false
+    gvhmr_commercial_license: false
+    third_party_assets_reviewed: false
+  retention:
+    # 仅当资产包 NPZ 与 SHA-256 全部校验通过后才会执行。
+    prune_workspace_after_export: false
+    prune_object_work_after_export: false
+
+resume:
+  skip_existing: true
+  force_hand_preprocess: false
+  force_locomotion: false
+  force_smoothing: false
+  force_phc: false
+  force_gmr: true
+
+human:
+  backend: hand4wholepp       # hamer | hand4wholepp | wilor
+  constraint_profile: conservative
+  gvhmr_batch_size: 4
+  hand_batch_size: 1
+  vitpose_image_scale: 1.0
+  low_memory: true
+  isolate_hand_process: true
+  filters:
+    wrist: false
+    temporal: true
+    fingers: true
+  diagnostics: true
+
+locomotion:
+  enabled: true
+  smooth_window: 9
+
+phc:
+  enabled: true
+
+gmr:
+  enabled: true
+  hand_model: sharpa          # sharpa | g1 | brainco
+  source: smoothed            # converted | smoothed | phc_smoothed | auto
+  target_fps: 30
+  human_yaw_offset_deg: 0.0
+  camera_source: gvhmr
+  render: true
+  composite_2x2: true
+  mujoco_gl: osmesa
+  render_width: 960
+  render_height: 720
+
+object:
+  enabled: false
+
+  # RGB-only 推荐 monocular；有对齐深度时可用 foundationpose。
+  mode: monocular             # monocular | foundationpose
+  only_configured_clips: true
+  rerender_gmr_after_import: true
+
+  collision:
+    method: auto              # auto | coacd | convex-hull
+    density_kg_m3: 600.0
+    mass_kg: null
+
+  overlay:
+    enabled: true
+    alpha: 0.82
+
+  monocular:
+    run_reconstruction: true
+    work_root: object_work/do_as_i_do
+    reconstruction_script: do-as-i-do-main/reconstruction/run_pipeline.sh
+    # SAM-HQ + Cutie 负责 mask；参考网格固定走 Hunyuan3D。
+    segmentation_prompt_mode: auto   # auto | click
+    segmentation_prompt: ""
+    samhq_checkpoint: null       # 可填本地 sam_hq_vit_l.pth；null 时自动解析
+    cutie_checkpoint: null       # 可填本地 cutie-base-mega.pth；null 时自动解析
+    require_segmentation_checkpoint: true
+    person_roi:
+      enabled: true
+      bbox_scale: 2.0
+      min_mask_inside_ratio: 0.60
+    auto_detector:
+      model: models/yolo11n.pt
+      confidence: 0.05
+      min_box_inside_person_roi: 0.50
+      box_padding_ratio: 0.08
+    hunyuan_face_count: 100000
+    hunyuan_timeout: 900
+    hunyuan_region: ap-guangzhou
+    moge_resolution_level: 7
+    megapose:
+      pose_hypotheses: 5
+      coarse_grid_stride: 2
+      refiner_iterations: 5
+      temporal_refiner_iterations: 2
+      reinit_interval: 120
+      min_iou: 0.05
+      reinit_iou: 0.18
+      max_interpolation_gap: 8
+    default_object_name: object
+    default_reference_frame: 0
+
+  quality:
+    min_valid_ratio: 0.35
+    min_observed_ratio: 0.10
+
+  foundationpose:
+    # 可使用 {clip} 占位符，例如 foundationpose-plus-plus-main/test_data/{clip}
+    result_dir_template: foundationpose-plus-plus-main/test_data/{clip}
+
+  # 每个片段的物体名称、参考帧和动态释放帧通常不同。
+  clips:
+    Date02_Sub02_chairwood_hand.0.color:
+      object_name: chair
+      reference_frame: 60
+      expected_size_m: [0.45, 1.60]
+      dynamic_release_frame: 0
+
+  dynamic_validation:
+    enabled: false
+    required: false
+    substeps: 16
+    lift_threshold_m: 0.05
+    object_floor_collision: true
+    render_video: true
+
+runtime:
+  conda_base: ${HOME}/miniconda3
+  python: ${HOME}/miniconda3/envs/locomotion/bin/python
+  cuda_visible_devices: "0"
+  # 物体点选的 OpenCV 窗口；当前桌面会话通常是 :0。
+  segmentation_display: ":0"
+  conda_envs:
+    samhq: moge2
+    moge2: moge2
+    megapose: megapose
+
+# 高级参数可直接覆盖现有 Bash 环境变量。不要在此保存任何云密钥。
+environment:
+  GVHMR_HAND4WHOLEPP_JOINT_SOURCE: direct_mano
+  GMR_HAND_INVALID_MODE: interp

@@ -1,0 +1,60 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "retargeting"
+version = "0.1.0"
+description = "Do as I Do retargeting: hand-object demos to robot hand trajectories"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "numpy",
+  "torch",
+  "scipy",
+  "loguru",
+  "tyro",
+  "tqdm",
+  "filelock",
+  "omegaconf",
+  "loop-rate-limiters",
+  "imageio[ffmpeg]",
+  "opencv-python",
+  "trimesh",
+  "rtree",     # trimesh bounds_tree backend (pedestal placement)
+  "shapely",   # trimesh 2D ops
+  "networkx",  # trimesh graph ops
+  "coacd",
+  "mink",
+  "viser",
+  "plotly",
+  # The mujoco_warp pin requires warp-lang ~1.10 (newer releases drop
+  # warp.context) and a matching mujoco; versions mirror the known-good env.
+  "warp-lang==1.10.1",
+  "mujoco==3.4.0",
+  "mujoco-warp @ git+https://github.com/google-deepmind/mujoco_warp@5d5a6450a7699e695f1767efd7715251713da2ac",
+]
+
+[project.optional-dependencies]
+dev = [
+  "ruff>=0.13.2",
+]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["retargeting"]
+
+[tool.ruff]
+line-length = 88
+indent-width = 4
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+# `I` (iteration-count dim) reads fine in the trace tensors; allow ambiguous names.
+ignore = ["E741"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["retargeting"]
