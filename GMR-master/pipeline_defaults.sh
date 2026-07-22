@@ -168,13 +168,9 @@ fi
 if [ -z "${GMR_SHARPA_RIGHT_MOUNT_QUAT+x}" ]; then
     GMR_SHARPA_RIGHT_MOUNT_QUAT="${GMR_SHARPA_MOUNT_QUAT:-0.5,0.5,0.5,0.5}"
 fi
-# This target-space scale is consumed by the Sharpa IK retargeter.  Keep it
-# separate from visual morphology scaling: changing target positions changes
-# IK residuals, while the render scale below only scales the attached hand.
-GMR_SHARPA_SCALE="${GMR_SHARPA_SCALE:-1.0}"
-# Applied by the renderer to meshes, link offsets and free-palm translation as
-# one homothetic hand.  0.65 preserves the previous G1 visual-size default.
-GMR_SHARPA_RENDER_SCALE="${GMR_SHARPA_RENDER_SCALE:-0.65}"
+# Sharpa uses its native geometry in both IK and rendering.  Scaling a whole
+# hand changes kinematics and visual attachment together, so it is deliberately
+# not exposed as a pipeline option.
 GMR_SHARPA_STEPS="${GMR_SHARPA_STEPS:-4}"
 GMR_SHARPA_INIT_STEPS="${GMR_SHARPA_INIT_STEPS:-50}"
 GMR_SHARPA_WRIST_POS_COST="${GMR_SHARPA_WRIST_POS_COST:-0.3}"
@@ -259,9 +255,4 @@ if [ "$GMR_OBJECT_PROXY" = "1" ] && [ -z "$GMR_OBJECT_MOTION_NAME" ]; then
     else
         GMR_OBJECT_MOTION_NAME="object_proxy_smpl.npz"
     fi
-elif [ -z "$GMR_OBJECT_MOTION_NAME" ]; then
-    # Written by GVHMR-hand/GVHMR-main/tools/pipeline/
-    # run_object_reconstruction_bridge.py.
-    # The renderer only enables it when the per-clip file actually exists.
-    GMR_OBJECT_MOTION_NAME="object_reconstruction/object_motion_gmr.npz"
 fi

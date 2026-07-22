@@ -324,6 +324,18 @@ def find_body(root, name):
     return None
 
 
+def remove_render_only_keyframes(root):
+    """Remove base-robot keyframes after adding external hand joints.
+
+    The temporary merged MJCF is used only for per-frame kinematic rendering,
+    where qpos is assigned from the body and hand motion arrays.  A base XML
+    keyframe still contains the pre-merge qpos width, so MuJoCo rejects it as
+    soon as the two Sharpa chains add their joints.
+    """
+    for keyframe in list(root.findall("keyframe")):
+        root.remove(keyframe)
+
+
 def ensure_sharpa_assets(target_root, sharpa_root, scale=1.0):
     asset = target_root.find("asset")
     if asset is None:
@@ -445,6 +457,40 @@ def sanitize_external_sharpa_body(body):
         joint.set("actuatorfrclimited", "false")
 
 
+def strip_native_g1_hand_visuals(root):
+    """Remove the stock G1 palm/finger visuals before mounting Sharpa.
+
+    Keep the native bodies, joints and actuators intact so the source GMR qpos
+    layout does not change.  Only geoms whose mesh/name starts with the G1 hand
+    prefix are removed.  This is more reliable than changing alpha after model
+    compilation because the stock G1 hand is rooted at ``wrist_yaw_link``, not
+    at the legacy ``hand_link`` expected by the old hiding helper.
+    """
+
+    removed = 0
+    for side in ("left", "right"):
+        wrist = find_body(root, f"{side}_wrist_yaw_link")
+        if wrist is None:
+            continue
+        prefix = f"{side}_hand_"
+        for parent in wrist.iter():
+            for child in list(parent):
+                if child.tag != "geom":
+                    continue
+                mesh_name = child.attrib.get("mesh", "")
+                geom_name = child.attrib.get("name", "")
+                if mesh_name.startswith(prefix) or geom_name.startswith(prefix):
+                    parent.remove(child)
+                    removed += 1
+    if removed:
+        print(
+            f"[render] Removed {removed} native G1 hand visual geoms; "
+            "the Sharpa hand is the only visible hand model.",
+            flush=True,
+        )
+    return removed
+
+
 def build_unitree_sharpa_visual_xml(
     base_xml,
     sharpa_root,
@@ -459,6 +505,7 @@ def build_unitree_sharpa_visual_xml(
     sharpa_root = pathlib.Path(sharpa_root)
     tree = ET.parse(base_xml)
     root = tree.getroot()
+    strip_native_g1_hand_visuals(root)
     ensure_sharpa_assets(root, sharpa_root, scale)
 
     for side in ("left", "right"):
@@ -489,6 +536,8 @@ def build_unitree_sharpa_visual_xml(
                 f"was found in {base_xml}"
             )
         parent.append(body)
+
+    remove_render_only_keyframes(root)
 
     tmp = tempfile.NamedTemporaryFile(
         prefix="h1_sharpa_visual_",
@@ -533,6 +582,8 @@ def build_g1_brainco_visual_xml(
         if parent is None:
             raise ValueError(f"{side}_wrist_yaw_link not found in {base_xml}")
         parent.append(body)
+
+    remove_render_only_keyframes(root)
 
     tmp = tempfile.NamedTemporaryFile(
         prefix="g1_brainco_revo2_visual_",
@@ -781,6 +832,10 @@ def load_object_motion(path):
         npz_value(data, "diaginertia_kg_m2", [0.0, 0.0, 0.0]),
         dtype=np.float64,
     ).reshape(-1)
+    inertial_quat = np.asarray(
+        npz_value(data, "inertial_quat_wxyz", [1.0, 0.0, 0.0, 0.0]),
+        dtype=np.float64,
+    ).reshape(-1)
     physics_asset_mode = str(
         np.asarray(
             npz_value(data, "physics_asset_mode", "visual_only")
@@ -794,11 +849,15 @@ def load_object_motion(path):
         if (
             center_of_mass.shape != (3,)
             or diaginertia.shape != (3,)
+            or inertial_quat.shape != (4,)
             or not np.isfinite(center_of_mass).all()
             or not np.isfinite(diaginertia).all()
+            or not np.isfinite(inertial_quat).all()
             or np.any(diaginertia <= 0)
+            or np.linalg.norm(inertial_quat) <= 1e-8
         ):
             raise ValueError("physics object COM/inertia is invalid")
+        inertial_quat = inertial_quat / np.linalg.norm(inertial_quat)
     friction = np.asarray(
         npz_value(data, "friction", [1.0, 0.05, 0.005]),
         dtype=np.float32,
@@ -822,6 +881,7 @@ def load_object_motion(path):
         "mass_kg": mass_kg,
         "center_of_mass_m": center_of_mass,
         "diaginertia_kg_m2": diaginertia,
+        "inertial_quat_wxyz": inertial_quat,
         "physics_asset_mode": physics_asset_mode,
         "friction": friction,
         "solref": solref,
@@ -982,9 +1042,7 @@ def render_mujoco(args):
         external_hand_path = args.brainco_hand_npz
     external_motion = load_external_hand_motion(external_hand_path)
     if external_hand_model == "sharpa":
-        external_motion = scale_sharpa_root_translation_qpos(
-            external_motion, args.sharpa_scale
-        )
+        external_motion = scale_sharpa_root_translation_qpos(external_motion, 1.0)
     object_motion = load_object_motion(args.object_motion_path)
     temp_xml_paths = []
     source_dof_names = None
@@ -1017,7 +1075,7 @@ def render_mujoco(args):
                 right_mount_quat,
                 left_mount_pos=left_mount_pos,
                 right_mount_pos=right_mount_pos,
-                scale=args.sharpa_scale,
+                scale=1.0,
             )
         else:
             xml_path = build_g1_brainco_visual_xml(
@@ -1199,12 +1257,6 @@ def main():
     parser.add_argument("--sharpa_mount_pos", default="0.055,0,0")
     parser.add_argument("--sharpa_left_mount_pos", default="")
     parser.add_argument("--sharpa_right_mount_pos", default="")
-    parser.add_argument(
-        "--sharpa_scale",
-        default=0.65,
-        type=float,
-        help="Uniform scale for the complete Sharpa hand (mesh, kinematic links and palm translation; default 0.65 for G1).",
-    )
     parser.add_argument(
         "--sharpa_mount_quat",
         default="",

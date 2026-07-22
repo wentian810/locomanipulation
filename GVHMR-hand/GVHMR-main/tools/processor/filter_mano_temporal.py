@@ -598,19 +598,45 @@ def filter_person(mano, vitpose_person, person_idx, args):
     return masks, stats
 
 
+def apply_global_orient_fill_policy(values, fill, reliable, mode):
+    """Apply the explicitly selected temporal policy to MANO wrist rotation.
+
+    ``preserve`` is intentionally a diagnostic/A-B policy, not an automatic
+    correction: it lets us determine whether the temporal interpolation itself
+    is responsible for an orientation artifact.  It leaves the backend's
+    per-frame estimate untouched, including in low-evidence frames.
+    """
+    if mode == "interpolate":
+        return interp_rotmats(values, fill, reliable)
+    if mode == "preserve":
+        return np.asarray(values, dtype=np.float32).copy()
+    raise ValueError(f"Unsupported global orientation fill mode: {mode}")
+
+
 def apply_side_updates(out, mano, side, person_idx, mask, args):
     reliable = mask["reliable"]
     fill = mask["fill"]
     new_valid = mask["new_valid"]
     merge_fixed = np.zeros_like(fill, dtype=bool)
+    global_orient_fixed = np.zeros_like(fill, dtype=bool)
 
-    for suffix in ("hand_global_orient", "hand_pose"):
-        key = f"{side}_{suffix}"
-        if key not in out:
-            continue
-        arr = as_numpy(out[key]).copy()
+    global_key = f"{side}_hand_global_orient"
+    if global_key in out and args.global_orient_fill_mode == "interpolate":
+        arr = as_numpy(out[global_key]).copy()
+        arr[person_idx] = apply_global_orient_fill_policy(
+            arr[person_idx],
+            fill,
+            reliable,
+            args.global_orient_fill_mode,
+        )
+        out[global_key] = tensor_like(arr, mano[global_key])
+        global_orient_fixed = fill.copy()
+
+    pose_key = f"{side}_hand_pose"
+    if pose_key in out:
+        arr = as_numpy(out[pose_key]).copy()
         arr[person_idx] = interp_rotmats(arr[person_idx], fill, reliable)
-        out[key] = tensor_like(arr, mano[key])
+        out[pose_key] = tensor_like(arr, mano[pose_key])
 
     for suffix in ("hand_joints_3d",):
         key = f"{side}_{suffix}"
@@ -683,7 +709,7 @@ def apply_side_updates(out, mano, side, person_idx, mask, args):
         arr = as_numpy(out[valid_key]).copy()
         arr[person_idx] = new_valid.astype(arr.dtype)
         out[valid_key] = tensor_like(arr, mano[valid_key])
-    return merge_fixed, size_floor
+    return merge_fixed, size_floor, global_orient_fixed
 
 
 def append_mask(out, side, name, values_by_person):
@@ -719,6 +745,16 @@ def main():
     parser.add_argument("--max_interp_gap", type=int, default=60)
     parser.add_argument("--max_edge_hold", type=int, default=15)
     parser.add_argument("--merge_short_good", type=int, default=2)
+    parser.add_argument(
+        "--global_orient_fill_mode",
+        choices=("interpolate", "preserve"),
+        default="interpolate",
+        help=(
+            "Temporal policy for MANO global wrist rotation. 'interpolate' "
+            "preserves legacy behavior; 'preserve' is an A/B diagnostic that "
+            "does not overwrite low-evidence wrist orientations."
+        ),
+    )
     args = parser.parse_args()
 
     mano_path = Path(args.mano_params)
@@ -728,13 +764,24 @@ def main():
     vitpose = load_vitpose(vitpose_path)
 
     if "left_hand_valid" in mano:
-        people = int(as_numpy(mano["left_hand_valid"]).shape[0])
-        frame_count = int(as_numpy(mano["left_hand_valid"]).shape[1])
+        mano_valid_key = "left_hand_valid"
     elif "right_hand_valid" in mano:
-        people = int(as_numpy(mano["right_hand_valid"]).shape[0])
-        frame_count = int(as_numpy(mano["right_hand_valid"]).shape[1])
+        mano_valid_key = "right_hand_valid"
     else:
         raise KeyError("mano_params must contain left_hand_valid or right_hand_valid")
+    mano_valid = as_numpy(mano[mano_valid_key])
+    people = int(mano_valid.shape[0])
+    frame_count = int(mano_valid.shape[1])
+    vitpose_frames = int(vitpose.shape[1])
+    if vitpose_frames != frame_count:
+        raise ValueError(
+            "MANO/ViTPose frame-count mismatch: "
+            f"{mano_valid_key} {tuple(mano_valid.shape)} from {mano_path} has "
+            f"{frame_count} frames, while vitpose_wholebody {tuple(vitpose.shape)} "
+            f"from {vitpose_path} has {vitpose_frames}. This indicates a stale "
+            "GVHMR cache after an input/FPS change; rerun the pipeline so this "
+            "clip is regenerated."
+        )
     person_indices = [args.person_idx] if args.person_idx >= 0 else list(range(people))
 
     out = dict(mano)
@@ -751,6 +798,7 @@ def main():
             "low_evidence_mask": [],
             "reproj_bad_mask": [],
             "reliable_mask": [],
+            "temporal_global_orient_interpolated_mask": [],
         }
         for side in ("left", "right")
     }
@@ -769,7 +817,14 @@ def main():
                 for name in collected[side]:
                     collected[side][name].append(empty.copy())
                 continue
-            merge_fixed, size_floor = apply_side_updates(out, mano, side, person_idx, masks[side], args)
+            merge_fixed, size_floor, global_orient_fixed = apply_side_updates(
+                out,
+                mano,
+                side,
+                person_idx,
+                masks[side],
+                args,
+            )
             collected[side]["temporal_fixed_mask"].append(masks[side]["fill"])
             collected[side]["temporal_bad_mask"].append(masks[side]["bad"] & ~masks[side]["fill"])
             collected[side]["bbox_shrink_mask"].append(masks[side]["shrink"])
@@ -780,6 +835,12 @@ def main():
             collected[side]["low_evidence_mask"].append(masks[side]["low_evidence"])
             collected[side]["reproj_bad_mask"].append(masks[side]["error_bad"])
             collected[side]["reliable_mask"].append(masks[side]["reliable"])
+            collected[side]["temporal_global_orient_interpolated_mask"].append(
+                global_orient_fixed
+            )
+            stats[side]["global_orient_filled"] = int(
+                np.sum(global_orient_fixed)
+            )
 
     for side in ("left", "right"):
         for name, values in collected[side].items():
@@ -805,6 +866,7 @@ def main():
         "max_interp_gap": int(args.max_interp_gap),
         "max_edge_hold": int(args.max_edge_hold),
         "merge_short_good": int(args.merge_short_good),
+        "global_orient_fill_mode": args.global_orient_fill_mode,
     }
 
     output.parent.mkdir(parents=True, exist_ok=True)

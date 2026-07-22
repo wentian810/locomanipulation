@@ -1,10 +1,9 @@
 #!/usr/bin/env python
-"""Offline temporal filter for MANO finger articulation.
+"""Offline temporal filter for MANO finger articulation and optional wrist smoothing.
 
-This pass does not change wrist/global orientation.  It reduces fast finger
-curl jumps, preserves recent grasp state when 2D evidence is weak, and can
-rescue frames where ViTPose shows an open hand but MANO stays curled by borrowing
-nearby open hand-pose examples from the same clip.
+Local finger articulation is always filtered.  Global wrist orientation uses
+an explicit ``smooth`` or ``preserve`` policy so an A/B experiment can separate
+an upstream hand-estimation issue from a temporal filtering artifact.
 """
 
 from __future__ import annotations
@@ -436,6 +435,65 @@ def open_rescue_pose(pose, joints, mismatch, open_anchor, weight):
     return out_pose, out_joints, fixed
 
 
+def apply_wrist_orientation_policy(
+    mano,
+    side,
+    person_idx,
+    global_orient,
+    valid,
+    low_evidence,
+    args,
+):
+    """Return wrist orientation under a separately auditable policy.
+
+    Local finger articulation can still be filtered in ``preserve`` mode.  The
+    global wrist frame is deliberately left alone so an A/B run can distinguish
+    an upstream Hand4Whole++ mistake from an artifact introduced by this
+    filter.  This is not a claim that raw orientations are always preferable.
+    """
+    frame_count = valid.shape[0]
+    empty = np.zeros(frame_count, dtype=bool)
+    if global_orient is None:
+        return None, empty, empty, empty
+    if args.wrist_mode == "preserve":
+        return global_orient, empty, empty, empty
+
+    wrist_bad = (~valid) | low_evidence
+    temporal_bad_key = f"{side}_hand_temporal_bad_mask"
+    if temporal_bad_key in mano:
+        wrist_bad |= as_numpy(mano[temporal_bad_key])[person_idx].astype(bool)
+    wrist_reliable = ~wrist_bad
+    wrist_fill = fillable_mask(
+        wrist_bad,
+        wrist_reliable,
+        args.max_interp_gap,
+        args.max_edge_hold,
+    )
+    fixed_global = interp_rotmats(global_orient, wrist_fill, wrist_reliable)
+    smoothed_global = smooth_rotmats(fixed_global, args.wrist_smooth_window)
+    wrist_blend = np.full(
+        frame_count,
+        float(args.wrist_reliable_smooth_weight),
+        dtype=np.float32,
+    )
+    wrist_blend[low_evidence] = float(args.wrist_weak_smooth_weight)
+    wrist_blend[wrist_bad | wrist_fill] = float(args.wrist_bad_smooth_weight)
+    out_global = slerp_rotmats_array(
+        fixed_global,
+        smoothed_global,
+        np.clip(wrist_blend, 0.0, 1.0),
+    )
+    out_global, wrist_rate_limited = rate_limit_rotmats(
+        out_global,
+        args.max_wrist_angle_delta,
+    )
+    wrist_changed = np.linalg.norm(
+        (out_global - global_orient).reshape(frame_count, -1),
+        axis=1,
+    ) > 1e-5
+    return out_global, wrist_fill, wrist_rate_limited, wrist_changed
+
+
 def process_side(mano, vitpose_person, side, person_idx, args):
     pose_key = f"{side}_hand_pose"
     joints_key = f"{side}_hand_joints_3d"
@@ -534,42 +592,15 @@ def process_side(mano, vitpose_person, side, person_idx, args):
         args.hand_size_reference_percentile,
     )
 
-    out_global = global_orient
-    wrist_rate_limited = np.zeros(frame_count, dtype=bool)
-    wrist_fill = np.zeros(frame_count, dtype=bool)
-    if global_orient is not None:
-        # Smooth the backend's own wrist frame. Mixing it with a separate body
-        # model or an explicit 180-degree candidate can introduce branch flips,
-        # especially for Hand4Whole++, whose body model is not GVHMR's model.
-        wrist_bad = (~valid) | low_evidence
-        temporal_bad_key = f"{side}_hand_temporal_bad_mask"
-        if temporal_bad_key in mano:
-            wrist_bad |= as_numpy(mano[temporal_bad_key])[person_idx].astype(bool)
-        wrist_reliable = ~wrist_bad
-        wrist_fill = fillable_mask(
-            wrist_bad,
-            wrist_reliable,
-            args.max_interp_gap,
-            args.max_edge_hold,
-        )
-        fixed_global = interp_rotmats(global_orient, wrist_fill, wrist_reliable)
-        smoothed_global = smooth_rotmats(fixed_global, args.wrist_smooth_window)
-        wrist_blend = np.full(
-            frame_count,
-            float(args.wrist_reliable_smooth_weight),
-            dtype=np.float32,
-        )
-        wrist_blend[low_evidence] = float(args.wrist_weak_smooth_weight)
-        wrist_blend[wrist_bad | wrist_fill] = float(args.wrist_bad_smooth_weight)
-        out_global = slerp_rotmats_array(
-            fixed_global,
-            smoothed_global,
-            np.clip(wrist_blend, 0.0, 1.0),
-        )
-        out_global, wrist_rate_limited = rate_limit_rotmats(
-            out_global,
-            args.max_wrist_angle_delta,
-        )
+    out_global, wrist_fill, wrist_rate_limited, wrist_changed = apply_wrist_orientation_policy(
+        mano,
+        side,
+        person_idx,
+        global_orient,
+        valid,
+        low_evidence,
+        args,
+    )
 
     raw_curl = curl
     fixed_curl = curl_proxy_from_21(out_joints)
@@ -590,6 +621,7 @@ def process_side(mano, vitpose_person, side, person_idx, args):
         "size_floor": size_floor,
         "wrist_fill": wrist_fill,
         "wrist_rate_limited": wrist_rate_limited,
+        "wrist_global_orient_changed": wrist_changed,
         "open_score": open_score,
         "evidence": evidence,
         "raw_curl": raw_curl,
@@ -606,6 +638,7 @@ def process_side(mano, vitpose_person, side, person_idx, args):
             "size_floor": int(np.sum(size_floor)),
             "wrist_fill": int(np.sum(wrist_fill)),
             "wrist_rate_limited": int(np.sum(wrist_rate_limited)),
+            "wrist_global_orient_changed": int(np.sum(wrist_changed)),
             "interp_fill": int(np.sum(fill)),
             "finger_fixed": int(np.sum(fill | spike | low_evidence | open_rescue | size_floor | joint_rate_limited)),
             "raw_curl_speed_p50_p90_p99": np.percentile(curl_speed, [50, 90, 99]).round(5).tolist(),
@@ -633,6 +666,7 @@ def main():
     parser.add_argument("--open_anchor_curl_percentile", type=float, default=35.0)
     parser.add_argument("--open_rescue_weight", type=float, default=0.45)
     parser.add_argument("--open_rescue_smooth_weight", type=float, default=0.65)
+    parser.add_argument("--open_rescue_enabled", type=int, default=1, choices=[0, 1], help="Enable open rescue; set 0 for object-holding or occlusion-heavy data")
     parser.add_argument("--curl_spike_mad", type=float, default=8.0)
     parser.add_argument("--curl_spike_abs", type=float, default=0.12)
     parser.add_argument("--open_change_support_thr", type=float, default=0.35)
@@ -649,10 +683,23 @@ def main():
     parser.add_argument("--wrist_weak_smooth_weight", type=float, default=0.75)
     parser.add_argument("--wrist_bad_smooth_weight", type=float, default=1.0)
     parser.add_argument("--max_wrist_angle_delta", type=float, default=0.30, help="Maximum per-frame global wrist rotation in radians; <=0 disables")
+    parser.add_argument(
+        "--wrist_mode",
+        choices=("smooth", "preserve"),
+        default="smooth",
+        help=(
+            "Global wrist policy. 'smooth' preserves legacy behavior; "
+            "'preserve' keeps the incoming wrist orientation for an isolated "
+            "A/B diagnosis while retaining local-finger filtering."
+        ),
+    )
     parser.add_argument("--hand_size_floor_ratio", type=float, default=0.94, help="Minimum palm extent relative to reliable raw hand size; <=0 disables")
     parser.add_argument("--hand_size_reference_percentile", type=float, default=50.0)
     args = parser.parse_args()
 
+    if not args.open_rescue_enabled:
+        args.open_rescue_weight = 0.0
+        args.open_rescue_smooth_weight = 0.0
     mano_path = Path(args.mano_params)
     vitpose_path = Path(args.vitpose_wholebody)
     output = Path(args.output)
@@ -684,6 +731,7 @@ def main():
             "joint_rate_limited_mask": [],
             "size_floor_mask": [],
             "wrist_fixed_mask": [],
+            "wrist_global_orient_changed_mask": [],
         }
         for side in ("left", "right")
     }
@@ -710,7 +758,11 @@ def main():
             joints_arr[person_idx] = result["joints"]
             out[pose_key] = tensor_like(pose_arr, mano[pose_key])
             out[joints_key] = tensor_like(joints_arr, mano[joints_key])
-            if global_key in out and result["global_orient"] is not None:
+            if (
+                global_key in out
+                and result["global_orient"] is not None
+                and args.wrist_mode == "smooth"
+            ):
                 global_arr = as_numpy(out[global_key]).copy()
                 global_arr[person_idx] = result["global_orient"]
                 out[global_key] = tensor_like(global_arr, mano[global_key])
@@ -725,6 +777,9 @@ def main():
             collected[side]["size_floor_mask"].append(result["size_floor"])
             collected[side]["wrist_fixed_mask"].append(
                 result["wrist_fill"] | result["wrist_rate_limited"]
+            )
+            collected[side]["wrist_global_orient_changed_mask"].append(
+                result["wrist_global_orient_changed"]
             )
             stats[f"person_{person_idx}"][side] = result["stats"]
 

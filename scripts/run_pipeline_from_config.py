@@ -7,6 +7,7 @@ import argparse
 import copy
 import hashlib
 import json
+import math
 import os
 import re
 import shlex
@@ -16,6 +17,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import cv2
 import yaml
 
 
@@ -55,6 +57,7 @@ ENV_CONFIG_MAP = {
     "WORK_WIDTH": "input.work_video.width",
     "WORK_HEIGHT": "input.work_video.height",
     "WORK_CRF": "input.work_video.crf",
+    "WORK_FPS": "input.work_video.fps",
     "FORCE_WORK_VIDEO": "input.work_video.force",
     "SKIP_EXISTING": "resume.skip_existing",
     "GVHMR_FORCE_HAND_PREPROCESS": "resume.force_hand_preprocess",
@@ -71,7 +74,46 @@ ENV_CONFIG_MAP = {
     "GVHMR_FILTER_MANO_WRIST": "human.filters.wrist",
     "GVHMR_FILTER_MANO_TEMPORAL": "human.filters.temporal",
     "GVHMR_FILTER_MANO_FINGERS": "human.filters.fingers",
+    "GVHMR_TEMPORAL_FILTER_GLOBAL_ORIENT_FILL_MODE": (
+        "human.filters.global_orient_fill_mode"
+    ),
+    "GVHMR_FINGER_FILTER_WRIST_MODE": "human.filters.wrist_mode",
     "GVHMR_DIAGNOSE_HAND": "human.diagnostics",
+    "GVHMR_HAND4WHOLEPP_CROP_TRACKING": "human.hand_crop_tracking.mode",
+    "GVHMR_HAND4WHOLEPP_CROP_TRACKING_MAX_GAP": (
+        "human.hand_crop_tracking.max_gap"
+    ),
+    "GVHMR_HAND4WHOLEPP_CROP_TRACKING_MAX_PREDICTION_GAP": (
+        "human.hand_crop_tracking.max_prediction_gap"
+    ),
+    "GVHMR_HAND4WHOLEPP_CROP_TRACKING_DIRECT_OBSERVATION_QUALITY": (
+        "human.hand_crop_tracking.direct_observation_quality"
+    ),
+    "GVHMR_VISIBLE_HAND_REFINE": "human.visible_hand_refine.enabled",
+    "GVHMR_VISIBLE_HAND_REFINE_DEVICE": "human.visible_hand_refine.device",
+    "GVHMR_VISIBLE_HAND_REFINE_BATCH_SIZE": "human.visible_hand_refine.batch_size",
+    "GVHMR_VISIBLE_HAND_REFINE_STEPS": "human.visible_hand_refine.steps",
+    "GVHMR_VISIBLE_HAND_REFINE_LR": "human.visible_hand_refine.lr",
+    "GVHMR_VISIBLE_HAND_REFINE_PRIOR_WEIGHT": "human.visible_hand_refine.prior_weight",
+    "GVHMR_VISIBLE_HAND_REFINE_FIT_CONFIDENCE": "human.visible_hand_refine.fit_confidence",
+    "GVHMR_VISIBLE_HAND_REFINE_FIT_MIN_KEYPOINTS": "human.visible_hand_refine.fit_min_keypoints",
+    "GVHMR_VISIBLE_HAND_REFINE_FIT_PARTITION": "human.visible_hand_refine.fit_partition",
+    "GVHMR_VISIBLE_HAND_REFINE_HOLDOUT_MIN_KEYPOINTS": "human.visible_hand_refine.holdout_min_keypoints",
+    "GVHMR_VISIBLE_HAND_REFINE_HOLDOUT_MAX_RELATIVE_REGRESSION_PX": (
+        "human.visible_hand_refine.holdout_max_relative_regression_px"
+    ),
+    "GVHMR_VISIBLE_HAND_REFINE_MAX_DELTA_DEGREES": "human.visible_hand_refine.max_delta_degrees",
+    "GVHMR_VISIBLE_HAND_REFINE_MIN_RELATIVE_IMPROVEMENT": "human.visible_hand_refine.min_relative_improvement",
+    "GVHMR_VISIBLE_HAND_REFINE_MIN_RELATIVE_IMPROVEMENT_PX": "human.visible_hand_refine.min_relative_improvement_px",
+    "GVHMR_VISIBLE_HAND_REFINE_MAX_ABSOLUTE_REGRESSION_PX": "human.visible_hand_refine.max_absolute_regression_px",
+    "GVHMR_VISIBLE_HAND_REFINE_MAX_ANCHOR_ERROR_PX": "human.visible_hand_refine.max_anchor_error_px",
+    "GVHMR_VISIBLE_HAND_REFINE_MAX_ANCHOR_ERROR_BBOX_RATIO": "human.visible_hand_refine.max_anchor_error_bbox_ratio",
+    "GVHMR_VISIBLE_HAND_REFINE_EVIDENCE_HAND_CONFIDENCE": "human.visible_hand_refine.evidence_hand_confidence",
+    "GVHMR_VISIBLE_HAND_REFINE_EVIDENCE_MIN_KEYPOINTS": "human.visible_hand_refine.evidence_min_keypoints",
+    "GVHMR_VISIBLE_HAND_REFINE_EVIDENCE_MEAN_CONFIDENCE": "human.visible_hand_refine.evidence_mean_confidence",
+    "GVHMR_VISIBLE_HAND_REFINE_EVIDENCE_WRIST_CONFIDENCE": "human.visible_hand_refine.evidence_wrist_confidence",
+    "GVHMR_VISIBLE_HAND_REFINE_EVIDENCE_MIN_BBOX_DIAGONAL_PX": "human.visible_hand_refine.evidence_min_bbox_diagonal_px",
+    "GVHMR_VISIBLE_HAND_REFINE_EVIDENCE_MIN_RUN": "human.visible_hand_refine.evidence_min_run",
     "RUN_GMR": "gmr.enabled",
     "GMR_HAND_MODEL": "gmr.hand_model",
     "GMR_SOURCE": "gmr.source",
@@ -227,6 +269,117 @@ def _bool_env(value: Any) -> str:
     return "1" if bool(value) else "0"
 
 
+def _validate_visible_hand_refine_config(value: Any) -> dict[str, Any]:
+    """Fail closed for the high-evidence wrist-refinement configuration.
+
+    This stage changes final rendered wrist rotations, so a quoted YAML boolean
+    such as ``enabled: \"false\"`` must not silently become truthy via Python's
+    normal ``bool(str)`` conversion.  Keep validation here, next to the config
+    runner, rather than duplicating it in the shell wrapper.
+    """
+    if not isinstance(value, dict):
+        raise ValueError("human.visible_hand_refine must be a mapping")
+
+    enabled = value.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ValueError("human.visible_hand_refine.enabled must be a boolean")
+
+    device = value.get("device", "auto")
+    if not isinstance(device, str) or device.lower() not in {"auto", "cuda", "cpu"}:
+        raise ValueError(
+            "human.visible_hand_refine.device must be 'auto', 'cuda', or 'cpu'"
+        )
+    fit_partition = value.get("fit_partition", "all")
+    if not isinstance(fit_partition, str) or fit_partition.lower() not in {
+        "all",
+        "non_tip",
+    }:
+        raise ValueError(
+            "human.visible_hand_refine.fit_partition must be 'all' or 'non_tip'"
+        )
+
+    def finite_number(
+        key: str,
+        *,
+        minimum: float | None = None,
+        maximum: float | None = None,
+        strict_minimum: bool = False,
+    ) -> None:
+        if key not in value:
+            return
+        number = value[key]
+        if isinstance(number, bool) or not isinstance(number, (int, float)):
+            raise ValueError(f"human.visible_hand_refine.{key} must be a number")
+        numeric = float(number)
+        if not math.isfinite(numeric):
+            raise ValueError(f"human.visible_hand_refine.{key} must be finite")
+        if minimum is not None and (
+            numeric < minimum or (strict_minimum and numeric <= minimum)
+        ):
+            comparator = ">" if strict_minimum else ">="
+            raise ValueError(
+                f"human.visible_hand_refine.{key} must be {comparator} {minimum}"
+            )
+        if maximum is not None and numeric > maximum:
+            raise ValueError(
+                f"human.visible_hand_refine.{key} must be <= {maximum}"
+            )
+
+    def bounded_integer(
+        key: str,
+        *,
+        minimum: int,
+        maximum: int | None = None,
+    ) -> None:
+        if key not in value:
+            return
+        number = value[key]
+        if isinstance(number, bool) or not isinstance(number, int):
+            raise ValueError(f"human.visible_hand_refine.{key} must be an integer")
+        if number < minimum or (maximum is not None and number > maximum):
+            upper = f" and <= {maximum}" if maximum is not None else ""
+            raise ValueError(
+                f"human.visible_hand_refine.{key} must be >= {minimum}{upper}"
+            )
+
+    bounded_integer("batch_size", minimum=1)
+    bounded_integer("steps", minimum=0)
+    bounded_integer("fit_min_keypoints", minimum=1, maximum=21)
+    bounded_integer("holdout_min_keypoints", minimum=1, maximum=5)
+    bounded_integer("evidence_min_keypoints", minimum=1, maximum=21)
+    bounded_integer("evidence_min_run", minimum=1)
+    if (
+        fit_partition.lower() == "non_tip"
+        and int(value.get("fit_min_keypoints", 12)) > 16
+    ):
+        raise ValueError(
+            "human.visible_hand_refine.fit_min_keypoints must be <= 16 "
+            "when fit_partition='non_tip'"
+        )
+
+    finite_number("lr", minimum=0.0, strict_minimum=True)
+    finite_number("prior_weight", minimum=0.0)
+    finite_number("fit_confidence", minimum=0.0, maximum=1.0)
+    finite_number("holdout_max_relative_regression_px", minimum=0.0)
+    finite_number(
+        "max_delta_degrees", minimum=0.0, maximum=180.0, strict_minimum=True
+    )
+    finite_number("min_relative_improvement", minimum=0.0, maximum=1.0)
+    finite_number("min_relative_improvement_px", minimum=0.0)
+    finite_number("max_absolute_regression_px", minimum=0.0)
+    finite_number("max_anchor_error_px", minimum=0.0, strict_minimum=True)
+    finite_number(
+        "max_anchor_error_bbox_ratio", minimum=0.0, strict_minimum=True
+    )
+    finite_number("evidence_hand_confidence", minimum=0.0, maximum=1.0)
+    finite_number("evidence_mean_confidence", minimum=0.0, maximum=1.0)
+    finite_number("evidence_wrist_confidence", minimum=0.0, maximum=1.0)
+    finite_number(
+        "evidence_min_bbox_diagonal_px", minimum=0.0, strict_minimum=True
+    )
+    return value
+
+
 def _env_value(value: Any) -> str:
     if isinstance(value, bool):
         return _bool_env(value)
@@ -333,6 +486,12 @@ class PipelineRunner:
             )
         )
         self.environment = self._build_environment()
+        # None means no admission decision has been made yet.  An empty set is
+        # a valid result: all selected clips were excluded before expensive
+        # human-motion inference.
+        self._eligible_clips: set[str] | None = None
+        self._video_duration_cache: dict[Path, float | None] = {}
+        self._human_stage_failures: list[dict[str, Any]] = []
 
     @staticmethod
     def _apply_environment_config_overrides(config: dict) -> None:
@@ -391,12 +550,51 @@ class PipelineRunner:
         resume = cfg.get("resume", {})
         human = cfg.get("human", {})
         filters = human.get("filters", {})
+        if not isinstance(filters, dict):
+            raise ValueError("human.filters must be a mapping")
+        global_orient_fill_mode = str(
+            filters.get("global_orient_fill_mode", "interpolate")
+        ).lower()
+        if global_orient_fill_mode not in {"interpolate", "preserve"}:
+            raise ValueError(
+                "human.filters.global_orient_fill_mode must be "
+                "'interpolate' or 'preserve'"
+            )
+        wrist_mode = str(filters.get("wrist_mode", "smooth")).lower()
+        if wrist_mode not in {"smooth", "preserve"}:
+            raise ValueError(
+                "human.filters.wrist_mode must be 'smooth' or 'preserve'"
+            )
+        hand_crop_tracking = human.get("hand_crop_tracking", {})
+        if not isinstance(hand_crop_tracking, dict):
+            raise ValueError("human.hand_crop_tracking must be a mapping")
+        hand_crop_tracking_mode = hand_crop_tracking.get("mode", "off")
+        # PyYAML 1.1 treats an unquoted `off` as False. Keep old hand-written
+        # YAML files safe while requiring every other value to be explicit.
+        if hand_crop_tracking_mode is False:
+            hand_crop_tracking_mode = "off"
+        visible_hand_refine = _validate_visible_hand_refine_config(
+            human.get("visible_hand_refine", {})
+        )
+        visible_refine_device = str(visible_hand_refine.get("device", "auto")).lower()
         locomotion = cfg.get("locomotion", {})
         phc = cfg.get("phc", {})
         gmr = cfg.get("gmr", {})
         object_cfg = cfg.get("object", {})
         monocular = object_cfg.get("monocular", {})
         runtime = cfg.get("runtime", {})
+
+        try:
+            work_fps = float(work_cfg.get("fps", 30))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("input.work_video.fps must be a positive number") from exc
+        if work_fps <= 0:
+            raise ValueError("input.work_video.fps must be a positive number")
+        if abs(work_fps - 30.0) > 1e-6:
+            raise ValueError(
+                "input.work_video.fps must be 30 until PHC, GMR, and motion "
+                "export support a configurable shared frame rate"
+            )
 
         env = os.environ.copy()
         # Free-form compatibility values have already passed through the same
@@ -407,6 +605,12 @@ class PipelineRunner:
             env[str(key)] = _env_value(value)
         env.update(
             {
+                # The generic batch shell is deliberately an internal backend.
+                # Only the config runner and backend wrappers may enter it.
+                "PIPELINE_WRAPPER_CONFIGURED": "1",
+                # Its inline evaluator is obsolete; formal quality reporting is
+                # invoked below by this runner through evaluate_clip_quality.py.
+                "EVALUATE": "0",
                 "PIPELINE_ROOT": str(self.root),
                 "CONDA_BASE": str(
                     self._path(
@@ -443,6 +647,7 @@ class PipelineRunner:
                 "WORK_WIDTH": str(work_cfg.get("width", 1280)),
                 "WORK_HEIGHT": str(work_cfg.get("height", 960)),
                 "WORK_CRF": str(work_cfg.get("crf", 18)),
+                "WORK_FPS": f"{work_fps:g}",
                 "FORCE_WORK_VIDEO": _bool_env(work_cfg.get("force", False)),
                 "SKIP_EXISTING": _bool_env(resume.get("skip_existing", True)),
                 "GVHMR_FORCE_HAND_PREPROCESS": _bool_env(
@@ -466,6 +671,87 @@ class PipelineRunner:
                 "GVHMR_HAND4WHOLEPP_BATCH_SIZE": str(
                     human.get("hand_batch_size", 1)
                 ),
+                "GVHMR_HAND4WHOLEPP_CROP_TRACKING": str(
+                    hand_crop_tracking_mode
+                ),
+                "GVHMR_HAND4WHOLEPP_CROP_TRACKING_MAX_GAP": str(
+                    hand_crop_tracking.get("max_gap", 8)
+                ),
+                "GVHMR_HAND4WHOLEPP_CROP_TRACKING_MAX_PREDICTION_GAP": str(
+                    hand_crop_tracking.get("max_prediction_gap", 2)
+                ),
+                "GVHMR_HAND4WHOLEPP_CROP_TRACKING_DIRECT_OBSERVATION_QUALITY": str(
+                    hand_crop_tracking.get("direct_observation_quality", 0.75)
+                ),
+                "GVHMR_VISIBLE_HAND_REFINE": _bool_env(
+                    visible_hand_refine.get("enabled", False)
+                ),
+                "GVHMR_VISIBLE_HAND_REFINE_DEVICE": visible_refine_device,
+                "GVHMR_VISIBLE_HAND_REFINE_BATCH_SIZE": str(
+                    visible_hand_refine.get("batch_size", 16)
+                ),
+                "GVHMR_VISIBLE_HAND_REFINE_STEPS": str(
+                    visible_hand_refine.get("steps", 8)
+                ),
+                "GVHMR_VISIBLE_HAND_REFINE_LR": str(
+                    visible_hand_refine.get("lr", 0.02)
+                ),
+                "GVHMR_VISIBLE_HAND_REFINE_PRIOR_WEIGHT": str(
+                    visible_hand_refine.get("prior_weight", 0.02)
+                ),
+                "GVHMR_VISIBLE_HAND_REFINE_FIT_CONFIDENCE": str(
+                    visible_hand_refine.get("fit_confidence", 0.60)
+                ),
+                "GVHMR_VISIBLE_HAND_REFINE_FIT_MIN_KEYPOINTS": str(
+                    visible_hand_refine.get("fit_min_keypoints", 12)
+                ),
+                "GVHMR_VISIBLE_HAND_REFINE_FIT_PARTITION": str(
+                    visible_hand_refine.get("fit_partition", "all")
+                ).lower(),
+                "GVHMR_VISIBLE_HAND_REFINE_HOLDOUT_MIN_KEYPOINTS": str(
+                    visible_hand_refine.get("holdout_min_keypoints", 3)
+                ),
+                "GVHMR_VISIBLE_HAND_REFINE_HOLDOUT_MAX_RELATIVE_REGRESSION_PX": str(
+                    visible_hand_refine.get(
+                        "holdout_max_relative_regression_px", 1.0
+                    )
+                ),
+                "GVHMR_VISIBLE_HAND_REFINE_MAX_DELTA_DEGREES": str(
+                    visible_hand_refine.get("max_delta_degrees", 25.0)
+                ),
+                "GVHMR_VISIBLE_HAND_REFINE_MIN_RELATIVE_IMPROVEMENT": str(
+                    visible_hand_refine.get("min_relative_improvement", 0.25)
+                ),
+                "GVHMR_VISIBLE_HAND_REFINE_MIN_RELATIVE_IMPROVEMENT_PX": str(
+                    visible_hand_refine.get("min_relative_improvement_px", 2.0)
+                ),
+                "GVHMR_VISIBLE_HAND_REFINE_MAX_ABSOLUTE_REGRESSION_PX": str(
+                    visible_hand_refine.get("max_absolute_regression_px", 2.0)
+                ),
+                "GVHMR_VISIBLE_HAND_REFINE_MAX_ANCHOR_ERROR_PX": str(
+                    visible_hand_refine.get("max_anchor_error_px", 20.0)
+                ),
+                "GVHMR_VISIBLE_HAND_REFINE_MAX_ANCHOR_ERROR_BBOX_RATIO": str(
+                    visible_hand_refine.get("max_anchor_error_bbox_ratio", 0.25)
+                ),
+                "GVHMR_VISIBLE_HAND_REFINE_EVIDENCE_HAND_CONFIDENCE": str(
+                    visible_hand_refine.get("evidence_hand_confidence", 0.45)
+                ),
+                "GVHMR_VISIBLE_HAND_REFINE_EVIDENCE_MIN_KEYPOINTS": str(
+                    visible_hand_refine.get("evidence_min_keypoints", 8)
+                ),
+                "GVHMR_VISIBLE_HAND_REFINE_EVIDENCE_MEAN_CONFIDENCE": str(
+                    visible_hand_refine.get("evidence_mean_confidence", 0.50)
+                ),
+                "GVHMR_VISIBLE_HAND_REFINE_EVIDENCE_WRIST_CONFIDENCE": str(
+                    visible_hand_refine.get("evidence_wrist_confidence", 0.45)
+                ),
+                "GVHMR_VISIBLE_HAND_REFINE_EVIDENCE_MIN_BBOX_DIAGONAL_PX": str(
+                    visible_hand_refine.get("evidence_min_bbox_diagonal_px", 96.0)
+                ),
+                "GVHMR_VISIBLE_HAND_REFINE_EVIDENCE_MIN_RUN": str(
+                    visible_hand_refine.get("evidence_min_run", 3)
+                ),
                 "GVHMR_HAMER_BATCH_SIZE": str(
                     human.get("hand_batch_size", 1)
                 ),
@@ -487,6 +773,10 @@ class PipelineRunner:
                 "GVHMR_FILTER_MANO_FINGERS": _bool_env(
                     filters.get("fingers", True)
                 ),
+                "GVHMR_TEMPORAL_FILTER_GLOBAL_ORIENT_FILL_MODE": (
+                    global_orient_fill_mode
+                ),
+                "GVHMR_FINGER_FILTER_WRIST_MODE": wrist_mode,
                 "GVHMR_DIAGNOSE_HAND": _bool_env(
                     human.get("diagnostics", True)
                 ),
@@ -501,6 +791,24 @@ class PipelineRunner:
                 "GMR_HAND_MODEL": str(gmr.get("hand_model", "sharpa")),
                 "GMR_SOURCE": str(gmr.get("source", "smoothed")),
                 "GMR_TARGET_FPS": str(gmr.get("target_fps", 30)),
+                "GMR_HEIGHT_ADJUST_MODE": str(
+                    gmr.get("height_adjust_mode", "support_aware_foot_geom")
+                ),
+                "GMR_SUPPORT_CONTACT_HEIGHT": str(
+                    gmr.get("support_contact_height", 0.08)
+                ),
+                "GMR_SUPPORT_MAX_VERTICAL_SPEED": str(
+                    gmr.get("support_max_vertical_speed", 1.20)
+                ),
+                "GMR_SUPPORT_MIN_CONTACT_RUN": str(
+                    gmr.get("support_min_contact_run", 3)
+                ),
+                "GMR_SUPPORT_MAX_CONTACT_GAP": str(
+                    gmr.get("support_max_contact_gap", 1)
+                ),
+                "GMR_SUPPORT_ROOT_STEP_LIMIT": str(
+                    gmr.get("support_root_step_limit", 0.03)
+                ),
                 "GMR_HUMAN_YAW_OFFSET_DEG": str(
                     gmr.get("human_yaw_offset_deg", 0.0)
                 ),
@@ -511,7 +819,7 @@ class PipelineRunner:
                 "GMR_COMPOSITE": _bool_env(
                     gmr.get("composite_2x2", True)
                 ),
-                "GMR_MUJOCO_GL": str(gmr.get("mujoco_gl", "osmesa")),
+                "GMR_MUJOCO_GL": str(gmr.get("mujoco_gl", "egl")),
                 "GMR_RENDER_WIDTH": str(gmr.get("render_width", 960)),
                 "GMR_RENDER_HEIGHT": str(gmr.get("render_height", 720)),
                 "HUNYUAN3D_FACE_COUNT": str(
@@ -571,7 +879,22 @@ class PipelineRunner:
 
     @staticmethod
     def _apply_hand_model(env: dict[str, str], model: str) -> None:
-        if model == "sharpa":
+        if model in {"sharpa", "sharpa_g1"}:
+            env.update(
+                {
+                    "GMR_ROBOT": "unitree_g1",
+                    "GMR_HAND_RETARGET_MODE": "off",
+                    "GMR_SHARPA_HANDS": "1",
+                    "GMR_SHARPA_AUTO_RETARGET": "1",
+                    "GMR_BRAINCO_HANDS": "0",
+                    "GMR_BRAINCO_AUTO_RETARGET": "0",
+                    "GMR_HEIGHT_ADJUST_MODE": env.get(
+                        "GMR_HEIGHT_ADJUST_MODE",
+                        "support_aware_foot_geom",
+                    ),
+                }
+            )
+        elif model == "sharpa_h1":
             env.update(
                 {
                     "GMR_ROBOT": "unitree_h1_with_hand",
@@ -614,7 +937,7 @@ class PipelineRunner:
             check=True,
         )
 
-    def _videos(self) -> list[Path]:
+    def _source_videos(self) -> list[Path]:
         input_cfg = self.config.get("input", {})
         dataset = self._path(input_cfg.get("dataset_dir", "dataset_new6"))
         extensions = {
@@ -627,16 +950,219 @@ class PipelineRunner:
         if not dataset.is_dir():
             raise FileNotFoundError(dataset)
         clip_filter = str(input_cfg.get("clip_filter", ""))
+        clip_filters = [
+            item.strip() for item in clip_filter.split(",") if item.strip()
+        ]
         videos = [
             path
             for path in sorted(dataset.iterdir())
             if path.is_file()
             and path.suffix.lower() in extensions
-            and (not clip_filter or clip_filter in path.name)
+            and (
+                not clip_filters
+                or any(item in path.name for item in clip_filters)
+            )
         ]
+        raw_min_duration = input_cfg.get("min_duration_seconds")
+        if raw_min_duration is not None:
+            try:
+                min_duration = float(raw_min_duration)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    "input.min_duration_seconds must be a non-negative number"
+                ) from exc
+            if min_duration < 0.0:
+                raise ValueError(
+                    "input.min_duration_seconds must be a non-negative number"
+                )
+            before_duration = len(videos)
+            unreadable = 0
+            accepted: list[Path] = []
+            for video in videos:
+                duration = self._video_duration_seconds(video)
+                if duration is None:
+                    unreadable += 1
+                    continue
+                if duration + 1e-6 >= min_duration:
+                    accepted.append(video)
+            videos = accepted
+            print(
+                "[INPUT] duration gate "
+                f">={min_duration:.2f}s: admitted {len(videos)}/{before_duration} "
+                f"(short={before_duration - len(videos) - unreadable}, "
+                f"unreadable={unreadable})",
+                flush=True,
+            )
+
+        raw_limit = input_cfg.get("max_videos")
+        if raw_limit is not None:
+            try:
+                max_videos = int(raw_limit)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("input.max_videos must be a positive integer") from exc
+            if max_videos <= 0:
+                raise ValueError("input.max_videos must be a positive integer")
+            videos = videos[:max_videos]
         if not videos:
             raise ValueError(f"no input videos found in {dataset}")
         return videos
+
+    def _video_duration_seconds(self, video: Path) -> float | None:
+        """Read only container metadata and memoize the result for this run."""
+        if video in self._video_duration_cache:
+            return self._video_duration_cache[video]
+        capture = cv2.VideoCapture(str(video))
+        try:
+            if not capture.isOpened():
+                duration: float | None = None
+            else:
+                frames = float(capture.get(cv2.CAP_PROP_FRAME_COUNT))
+                fps = float(capture.get(cv2.CAP_PROP_FPS))
+                duration = frames / fps if frames > 0.0 and fps > 0.0 else None
+        finally:
+            capture.release()
+        self._video_duration_cache[video] = duration
+        return duration
+
+    def _videos(self) -> list[Path]:
+        videos = self._source_videos()
+        if self._eligible_clips is not None:
+            videos = [
+                video for video in videos if video.stem in self._eligible_clips
+            ]
+        return videos
+
+    def _fullbody_preflight_config(self) -> dict[str, Any]:
+        value = self.config.get("input", {}).get("fullbody_preflight", {})
+        if not isinstance(value, dict):
+            raise ValueError("input.fullbody_preflight must be a mapping")
+        return value
+
+    def _run_fullbody_preflight(self) -> list[Path]:
+        """Run the cheap pose gate once, before invoking the GVHMR wrapper."""
+        preflight = self._fullbody_preflight_config()
+        candidates = self._source_videos()
+        if not bool(preflight.get("enabled", True)):
+            self._eligible_clips = {video.stem for video in candidates}
+            print(
+                f"[FULLBODY] disabled; admitting {len(candidates)} selected clips",
+                flush=True,
+            )
+            return candidates
+
+        mode = str(preflight.get("mode", "gate")).lower()
+        if mode not in {"gate", "report"}:
+            raise ValueError(
+                "input.fullbody_preflight.mode must be gate or report"
+            )
+        output_root = self._path(self.config["output"]["root"])
+        report_path = output_root / "fullbody_preflight.jsonl"
+        csv_path = output_root / "fullbody_preflight.csv"
+        model_path = self._path(
+            preflight.get("model", "models/yolo11n-pose.pt")
+        )
+        script = self.root / "scripts" / "preflight_fullbody_gate.py"
+        if not script.is_file():
+            raise FileNotFoundError(script)
+        if not model_path.is_file():
+            raise FileNotFoundError(
+                "input.fullbody_preflight.model is missing: " f"{model_path}"
+            )
+        if self.dry_run:
+            self._eligible_clips = {video.stem for video in candidates}
+            print(
+                f"[DRY-RUN][FULLBODY] would evaluate {len(candidates)} clips "
+                f"with {model_path.name}",
+                flush=True,
+            )
+            return candidates
+
+        output_root.mkdir(parents=True, exist_ok=True)
+        list_path = output_root / ".fullbody_preflight_inputs.txt"
+        list_path.write_text(
+            "".join(f"{video.resolve()}\n" for video in candidates),
+            encoding="utf-8",
+        )
+        option_map = {
+            "samples": "samples",
+            "image_size": "imgsz",
+            "person_confidence": "person-confidence",
+            "keypoint_confidence": "keypoint-confidence",
+            "min_person_ratio": "min-person-ratio",
+            "min_top_ratio": "min-top-ratio",
+            "min_left_wrist_ratio": "min-left-wrist-ratio",
+            "min_right_wrist_ratio": "min-right-wrist-ratio",
+            "min_left_ankle_ratio": "min-left-ankle-ratio",
+            "min_right_ankle_ratio": "min-right-ankle-ratio",
+            "min_full_body_ratio": "min-full-body-ratio",
+            "min_person_height_ratio": "min-person-height-ratio",
+            "min_usable_scale_ratio": "min-usable-scale-ratio",
+            "max_competing_person_ratio": "max-competing-person-ratio",
+            "min_competing_person_scale_ratio": (
+                "min-competing-person-scale-ratio"
+            ),
+        }
+        command = [
+            self.runtime_python,
+            str(script),
+            "--video-list",
+            str(list_path),
+            "--report",
+            str(report_path),
+            "--csv",
+            str(csv_path),
+            "--model",
+            str(model_path),
+            "--device",
+            str(preflight.get("device", "auto")),
+        ]
+        for config_name, option in option_map.items():
+            if config_name in preflight:
+                command.extend([f"--{option}", str(preflight[config_name])])
+        if not bool(preflight.get("cache", True)):
+            command.append("--no-cache")
+        try:
+            self._run(command)
+        finally:
+            list_path.unlink(missing_ok=True)
+
+        records: dict[str, dict[str, Any]] = {}
+        for line in report_path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            value = json.loads(line)
+            if isinstance(value, dict) and isinstance(value.get("source"), str):
+                records[value["source"]] = value
+        missing = [
+            video for video in candidates if str(video.resolve()) not in records
+        ]
+        if missing:
+            raise RuntimeError(
+                "full-body preflight did not return records for: "
+                + ", ".join(video.name for video in missing)
+            )
+        admitted = [
+            video
+            for video in candidates
+            if bool(records[str(video.resolve())].get("eligible", False))
+        ]
+        excluded = [video for video in candidates if video not in admitted]
+        for video in excluded:
+            record = records[str(video.resolve())]
+            print(
+                f"[FULLBODY] exclude {video.name}: "
+                + " | ".join(record.get("reasons", ["unknown_reason"])),
+                flush=True,
+            )
+        selected = candidates if mode == "report" else admitted
+        self._eligible_clips = {video.stem for video in selected}
+        print(
+            f"[FULLBODY] admission mode={mode}: "
+            f"{len(admitted)}/{len(candidates)} eligible; "
+            f"running={len(selected)}",
+            flush=True,
+        )
+        return selected
 
     def _video_alias_sources(
         self,
@@ -660,6 +1186,7 @@ class PipelineRunner:
                 [
                     clip_dir / f"{slug}__gmr.mp4",
                     _first_matching(clip_dir, "*__gmr.mp4"),
+                    clip_dir / "unitree_g1_sharpa_gvhmr.mp4",
                     clip_dir / "unitree_h1_with_hand_sharpa_gvhmr.mp4",
                     clip_dir / "unitree_h1_with_hand_retarget_gvhmr.mp4",
                 ]
@@ -739,6 +1266,42 @@ class PipelineRunner:
                 f"runtime.python is not a file: {runtime_python}"
             )
         videos = self._videos()
+        human = self.config.get("human", {})
+        hand_crop_tracking = human.get("hand_crop_tracking", {})
+        if not isinstance(hand_crop_tracking, dict):
+            raise ValueError("human.hand_crop_tracking must be a mapping")
+        raw_tracking_mode = hand_crop_tracking.get("mode", "off")
+        tracking_mode = (
+            "off" if raw_tracking_mode is False else str(raw_tracking_mode)
+        )
+        if tracking_mode not in {"off", "flow_kalman"}:
+            raise ValueError(
+                "human.hand_crop_tracking.mode must be off or flow_kalman"
+            )
+        try:
+            max_gap = int(hand_crop_tracking.get("max_gap", 8))
+            max_prediction_gap = int(
+                hand_crop_tracking.get("max_prediction_gap", 2)
+            )
+            direct_observation_quality = float(
+                hand_crop_tracking.get("direct_observation_quality", 0.75)
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "human.hand_crop_tracking values must be numeric"
+            ) from exc
+        if max_gap < 0 or max_prediction_gap < 0:
+            raise ValueError(
+                "human.hand_crop_tracking gap limits must be non-negative"
+            )
+        if max_prediction_gap > max_gap:
+            raise ValueError(
+                "human.hand_crop_tracking.max_prediction_gap cannot exceed max_gap"
+            )
+        if not 0.0 <= direct_observation_quality <= 1.0:
+            raise ValueError(
+                "human.hand_crop_tracking.direct_observation_quality must be in [0, 1]"
+            )
         product = self.config.get("product", {})
         product_will_run = stage == "product" or (
             product.get("enabled", False)
@@ -792,6 +1355,40 @@ class PipelineRunner:
                     f"{missing}"
                 )
         if stage in {"human", "all"}:
+            preflight = self._fullbody_preflight_config()
+            if bool(preflight.get("enabled", True)):
+                mode = str(preflight.get("mode", "gate")).lower()
+                if mode not in {"gate", "report"}:
+                    raise ValueError(
+                        "input.fullbody_preflight.mode must be gate or report"
+                    )
+                model_path = self._path(
+                    preflight.get("model", "models/yolo11n-pose.pt")
+                )
+                if not model_path.is_file():
+                    raise FileNotFoundError(
+                        "input.fullbody_preflight.model is missing: "
+                        f"{model_path}"
+                    )
+                for name, value in preflight.items():
+                    if (
+                        name.startswith("min_")
+                        or name.startswith("max_")
+                        or name.endswith("confidence")
+                    ):
+                        try:
+                            numeric = float(value)
+                        except (TypeError, ValueError) as exc:
+                            raise ValueError(
+                                f"input.fullbody_preflight.{name} must be numeric"
+                            ) from exc
+                        if not 0.0 <= numeric <= 1.0:
+                            raise ValueError(
+                                f"input.fullbody_preflight.{name} must be in [0, 1]"
+                            )
+                script = self.root / "scripts" / "preflight_fullbody_gate.py"
+                if not script.is_file():
+                    raise FileNotFoundError(script)
             backend = self.config.get("human", {}).get(
                 "backend",
                 "hand4wholepp",
@@ -814,6 +1411,23 @@ class PipelineRunner:
                 if stage == "object":
                     raise ValueError("object.enabled is false")
                 return
+            archive_readme = str(obj.get("archive_readme", "")).strip()
+            reconstruction_root = self.root / "do-as-i-do-main" / "reconstruction"
+            foundationpose_root = (
+                self.root / "foundationpose-plus-plus-cutie-realtime-mask"
+            )
+            if (
+                archive_readme
+                and self._path(archive_readme).is_file()
+                and (
+                    not reconstruction_root.is_dir()
+                    or not foundationpose_root.is_dir()
+                )
+            ):
+                raise RuntimeError(
+                    "Object reconstruction is archived. Restore it with: "
+                    f"bash {archive_readme.replace('README.md', 'restore_object_reconstruction.sh')}"
+                )
             mode = obj.get("mode", "monocular")
             if mode not in {"monocular", "foundationpose"}:
                 raise ValueError(f"unsupported object.mode: {mode}")
@@ -1061,6 +1675,14 @@ class PipelineRunner:
                             )
 
     def run_human(self) -> None:
+        admitted = self._run_fullbody_preflight()
+        if not admitted:
+            print(
+                "[FULLBODY] no selected clips meet the full-body admission rule; "
+                "skipping human/GMR inference.",
+                flush=True,
+            )
+            return
         backend = self.config.get("human", {}).get(
             "backend",
             "hand4wholepp",
@@ -1073,13 +1695,60 @@ class PipelineRunner:
             / "pipeline"
             / BACKEND_WRAPPERS[backend]
         )
-        self._run(["bash", str(wrapper)])
-        self.write_video_aliases()
+        environment = self.environment.copy()
+        # The backend wrapper uses substring filters.  Supplying the exact
+        # admitted stem list prevents rejected clips from re-entering through
+        # a broad original input.clip_filter.
+        environment["CLIP_FILTER"] = ",".join(video.stem for video in admitted)
+        try:
+            self._run(["bash", str(wrapper)], env=environment)
+        except subprocess.CalledProcessError as exc:
+            # The batch wrapper completes independent clips before returning a
+            # non-zero status for failed ones.  Preserve those completed
+            # results and let quality/product stages process only their known
+            # good outputs; otherwise one bad video discards a whole batch.
+            output_root = self._path(self.config["output"]["root"])
+            completed = [
+                video
+                for video in admitted
+                if (output_root / video.stem / "robot_motion.pkl").is_file()
+            ]
+            failed = [video for video in admitted if video not in completed]
+            if not completed:
+                raise
+            self._eligible_clips = {video.stem for video in completed}
+            failure_record = {
+                "schema_version": 1,
+                "wrapper": str(wrapper),
+                "returncode": int(exc.returncode),
+                "admitted_count": len(admitted),
+                "completed_count": len(completed),
+                "failed_count": len(failed),
+                "completed_clips": [video.stem for video in completed],
+                "failed_clips": [video.stem for video in failed],
+            }
+            self._human_stage_failures.append(failure_record)
+            (output_root / "human_stage_failures.json").write_text(
+                json.dumps(failure_record, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            print(
+                "[HUMAN] batch wrapper returned "
+                f"{exc.returncode}; continuing with {len(completed)}/"
+                f"{len(admitted)} completed clips. Failed clips are recorded in "
+                f"{output_root / 'human_stage_failures.json'}",
+                flush=True,
+            )
+            admitted = completed
+        self.write_video_aliases([video.stem for video in admitted])
 
     def run_product(self) -> None:
         """Export safe NPZ digital-asset bundles from trusted work outputs."""
         from export_dataset_product import export_from_config
 
+        if self._eligible_clips == set():
+            print("[PRODUCT] no full-body-admitted clips; skipping export.")
+            return
         clips = [video.stem for video in self._product_videos()]
         export_from_config(
             self.root,
@@ -1092,6 +1761,9 @@ class PipelineRunner:
         """Evaluate completed clips and write pass/warn/fail reports."""
         from evaluate_clip_quality import evaluate_clips
 
+        if self._eligible_clips == set():
+            print("[QUALITY] no full-body-admitted clips; skipping evaluation.")
+            return
         quality_config = self.config
         videos = self._quality_videos()
         if human_only and self.config.get("object", {}).get("enabled", False):
@@ -1644,7 +2316,7 @@ class PipelineRunner:
                 "--mujoco_gl",
                 self.environment.get("GMR_MUJOCO_GL", "osmesa"),
             ]
-            if hand_model == "sharpa":
+            if hand_model in {"sharpa", "sharpa_g1", "sharpa_h1"}:
                 command.extend(
                     [
                         "--sharpa_hand_npz",
@@ -1667,6 +2339,9 @@ class PipelineRunner:
             self._run(command)
 
     def run_objects(self) -> None:
+        if self._eligible_clips == set():
+            print("[OBJECT] no full-body-admitted clips; skipping object stage.")
+            return
         obj = self.config["object"]
         output_root = self._path(self.config["output"]["root"])
         configured = set(obj.get("clips", {}))

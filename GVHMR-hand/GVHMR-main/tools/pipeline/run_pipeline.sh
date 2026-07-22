@@ -58,6 +58,10 @@ GVHMR_HAND4WHOLEPP_PYTHON="${GVHMR_HAND4WHOLEPP_PYTHON:-$PY_GVHMR}"
 GVHMR_HAND4WHOLEPP_BATCH_SIZE="${GVHMR_HAND4WHOLEPP_BATCH_SIZE:-4}"
 GVHMR_HAND4WHOLEPP_YOLO_MODEL="${GVHMR_HAND4WHOLEPP_YOLO_MODEL:-yolo11n.pt}"
 GVHMR_HAND4WHOLEPP_JOINT_SOURCE="${GVHMR_HAND4WHOLEPP_JOINT_SOURCE:-direct_mano}"
+GVHMR_HAND4WHOLEPP_CROP_TRACKING="${GVHMR_HAND4WHOLEPP_CROP_TRACKING:-off}"
+GVHMR_HAND4WHOLEPP_CROP_TRACKING_MAX_GAP="${GVHMR_HAND4WHOLEPP_CROP_TRACKING_MAX_GAP:-8}"
+GVHMR_HAND4WHOLEPP_CROP_TRACKING_MAX_PREDICTION_GAP="${GVHMR_HAND4WHOLEPP_CROP_TRACKING_MAX_PREDICTION_GAP:-2}"
+GVHMR_HAND4WHOLEPP_CROP_TRACKING_DIRECT_OBSERVATION_QUALITY="${GVHMR_HAND4WHOLEPP_CROP_TRACKING_DIRECT_OBSERVATION_QUALITY:-0.75}"
 GVHMR_VITPOSE_IMG_DS="${GVHMR_VITPOSE_IMG_DS:-1.0}"
 GVHMR_HAND_KPT_CONF_THR="${GVHMR_HAND_KPT_CONF_THR:-0.35}"
 GVHMR_HAND_KPT_LOW_CONF_THR="${GVHMR_HAND_KPT_LOW_CONF_THR:-0.2}"
@@ -102,6 +106,9 @@ GVHMR_TEMPORAL_FILTER_BBOX_SIZE_FLOOR_RATIO="${GVHMR_TEMPORAL_FILTER_BBOX_SIZE_F
 GVHMR_TEMPORAL_FILTER_BBOX_SIZE_FLOOR_MIN_FOREARM_RATIO="${GVHMR_TEMPORAL_FILTER_BBOX_SIZE_FLOOR_MIN_FOREARM_RATIO:-0.45}"
 GVHMR_TEMPORAL_FILTER_MAX_INTERP_GAP="${GVHMR_TEMPORAL_FILTER_MAX_INTERP_GAP:-60}"
 GVHMR_TEMPORAL_FILTER_MAX_EDGE_HOLD="${GVHMR_TEMPORAL_FILTER_MAX_EDGE_HOLD:-15}"
+# Keep orientation policy separate from local finger-articulation filtering so
+# a visual A/B can isolate the cause of a palm/back artifact.
+GVHMR_TEMPORAL_FILTER_GLOBAL_ORIENT_FILL_MODE="${GVHMR_TEMPORAL_FILTER_GLOBAL_ORIENT_FILL_MODE:-interpolate}"
 GVHMR_FILTER_MANO_FINGERS="${GVHMR_FILTER_MANO_FINGERS:-0}"
 GVHMR_FINGER_FILTER_SMOOTH_WINDOW="${GVHMR_FINGER_FILTER_SMOOTH_WINDOW:-17}"
 GVHMR_FINGER_FILTER_RELIABLE_SMOOTH_WEIGHT="${GVHMR_FINGER_FILTER_RELIABLE_SMOOTH_WEIGHT:-0.22}"
@@ -116,9 +123,48 @@ GVHMR_FINGER_FILTER_WRIST_RELIABLE_SMOOTH_WEIGHT="${GVHMR_FINGER_FILTER_WRIST_RE
 GVHMR_FINGER_FILTER_WRIST_WEAK_SMOOTH_WEIGHT="${GVHMR_FINGER_FILTER_WRIST_WEAK_SMOOTH_WEIGHT:-0.80}"
 GVHMR_FINGER_FILTER_WRIST_BAD_SMOOTH_WEIGHT="${GVHMR_FINGER_FILTER_WRIST_BAD_SMOOTH_WEIGHT:-1.0}"
 GVHMR_FINGER_FILTER_MAX_WRIST_ANGLE_DELTA="${GVHMR_FINGER_FILTER_MAX_WRIST_ANGLE_DELTA:-0.25}"
+GVHMR_FINGER_FILTER_WRIST_MODE="${GVHMR_FINGER_FILTER_WRIST_MODE:-smooth}"
 GVHMR_FINGER_FILTER_HAND_SIZE_FLOOR_RATIO="${GVHMR_FINGER_FILTER_HAND_SIZE_FLOOR_RATIO:-0.96}"
 GVHMR_FINGER_FILTER_OPEN_RESCUE_WEIGHT="${GVHMR_FINGER_FILTER_OPEN_RESCUE_WEIGHT:-0.30}"
 GVHMR_FINGER_FILTER_OPEN_RESCUE_SMOOTH_WEIGHT="${GVHMR_FINGER_FILTER_OPEN_RESCUE_SMOOTH_WEIGHT:-0.70}"
+GVHMR_FINGER_FILTER_OPEN_RESCUE_ENABLED="${GVHMR_FINGER_FILTER_OPEN_RESCUE_ENABLED:-1}"
+GVHMR_FINAL_FINGER_SMOOTH_AFTER_VISIBLE_REFINE="${GVHMR_FINAL_FINGER_SMOOTH_AFTER_VISIBLE_REFINE:-1}"
+GVHMR_FINAL_FINGER_SMOOTH_WINDOW="${GVHMR_FINAL_FINGER_SMOOTH_WINDOW:-9}"
+GVHMR_FINAL_FINGER_RELIABLE_SMOOTH_WEIGHT="${GVHMR_FINAL_FINGER_RELIABLE_SMOOTH_WEIGHT:-0.20}"
+GVHMR_FINAL_FINGER_WEAK_SMOOTH_WEIGHT="${GVHMR_FINAL_FINGER_WEAK_SMOOTH_WEIGHT:-0.60}"
+GVHMR_FINAL_FINGER_BAD_SMOOTH_WEIGHT="${GVHMR_FINAL_FINGER_BAD_SMOOTH_WEIGHT:-0.85}"
+# Experimental correctness repair for Hand4Whole++: filters edit MANO pose
+# and joints separately, so recompute the final joints from the final pose
+# before converting/retargeting.  It remains globally opt-in because other
+# backends do not expose this direct-MANO contract; human_sharpa.yaml enables
+# it after the validated Hand4Whole++ A/B.
+GVHMR_RECOMPUTE_DIRECT_MANO="${GVHMR_RECOMPUTE_DIRECT_MANO:-0}"
+GVHMR_RECOMPUTE_DIRECT_MANO_BATCH_SIZE="${GVHMR_RECOMPUTE_DIRECT_MANO_BATCH_SIZE:-256}"
+# Final-render-space, evidence-gated wrist correction. Pipeline configs choose
+# whether to enable it; it is never a palm/back flip.
+GVHMR_VISIBLE_HAND_REFINE="${GVHMR_VISIBLE_HAND_REFINE:-0}"
+GVHMR_VISIBLE_HAND_REFINE_DEVICE="${GVHMR_VISIBLE_HAND_REFINE_DEVICE:-auto}"
+GVHMR_VISIBLE_HAND_REFINE_BATCH_SIZE="${GVHMR_VISIBLE_HAND_REFINE_BATCH_SIZE:-16}"
+GVHMR_VISIBLE_HAND_REFINE_STEPS="${GVHMR_VISIBLE_HAND_REFINE_STEPS:-8}"
+GVHMR_VISIBLE_HAND_REFINE_LR="${GVHMR_VISIBLE_HAND_REFINE_LR:-0.02}"
+GVHMR_VISIBLE_HAND_REFINE_PRIOR_WEIGHT="${GVHMR_VISIBLE_HAND_REFINE_PRIOR_WEIGHT:-0.02}"
+GVHMR_VISIBLE_HAND_REFINE_FIT_CONFIDENCE="${GVHMR_VISIBLE_HAND_REFINE_FIT_CONFIDENCE:-0.60}"
+GVHMR_VISIBLE_HAND_REFINE_FIT_MIN_KEYPOINTS="${GVHMR_VISIBLE_HAND_REFINE_FIT_MIN_KEYPOINTS:-12}"
+GVHMR_VISIBLE_HAND_REFINE_FIT_PARTITION="${GVHMR_VISIBLE_HAND_REFINE_FIT_PARTITION:-all}"
+GVHMR_VISIBLE_HAND_REFINE_HOLDOUT_MIN_KEYPOINTS="${GVHMR_VISIBLE_HAND_REFINE_HOLDOUT_MIN_KEYPOINTS:-3}"
+GVHMR_VISIBLE_HAND_REFINE_HOLDOUT_MAX_RELATIVE_REGRESSION_PX="${GVHMR_VISIBLE_HAND_REFINE_HOLDOUT_MAX_RELATIVE_REGRESSION_PX:-1.0}"
+GVHMR_VISIBLE_HAND_REFINE_MAX_DELTA_DEGREES="${GVHMR_VISIBLE_HAND_REFINE_MAX_DELTA_DEGREES:-25}"
+GVHMR_VISIBLE_HAND_REFINE_MIN_RELATIVE_IMPROVEMENT="${GVHMR_VISIBLE_HAND_REFINE_MIN_RELATIVE_IMPROVEMENT:-0.25}"
+GVHMR_VISIBLE_HAND_REFINE_MIN_RELATIVE_IMPROVEMENT_PX="${GVHMR_VISIBLE_HAND_REFINE_MIN_RELATIVE_IMPROVEMENT_PX:-2.0}"
+GVHMR_VISIBLE_HAND_REFINE_MAX_ABSOLUTE_REGRESSION_PX="${GVHMR_VISIBLE_HAND_REFINE_MAX_ABSOLUTE_REGRESSION_PX:-2.0}"
+GVHMR_VISIBLE_HAND_REFINE_MAX_ANCHOR_ERROR_PX="${GVHMR_VISIBLE_HAND_REFINE_MAX_ANCHOR_ERROR_PX:-20.0}"
+GVHMR_VISIBLE_HAND_REFINE_MAX_ANCHOR_ERROR_BBOX_RATIO="${GVHMR_VISIBLE_HAND_REFINE_MAX_ANCHOR_ERROR_BBOX_RATIO:-0.25}"
+GVHMR_VISIBLE_HAND_REFINE_EVIDENCE_HAND_CONFIDENCE="${GVHMR_VISIBLE_HAND_REFINE_EVIDENCE_HAND_CONFIDENCE:-0.45}"
+GVHMR_VISIBLE_HAND_REFINE_EVIDENCE_MIN_KEYPOINTS="${GVHMR_VISIBLE_HAND_REFINE_EVIDENCE_MIN_KEYPOINTS:-8}"
+GVHMR_VISIBLE_HAND_REFINE_EVIDENCE_MEAN_CONFIDENCE="${GVHMR_VISIBLE_HAND_REFINE_EVIDENCE_MEAN_CONFIDENCE:-0.50}"
+GVHMR_VISIBLE_HAND_REFINE_EVIDENCE_WRIST_CONFIDENCE="${GVHMR_VISIBLE_HAND_REFINE_EVIDENCE_WRIST_CONFIDENCE:-0.45}"
+GVHMR_VISIBLE_HAND_REFINE_EVIDENCE_MIN_BBOX_DIAGONAL_PX="${GVHMR_VISIBLE_HAND_REFINE_EVIDENCE_MIN_BBOX_DIAGONAL_PX:-96}"
+GVHMR_VISIBLE_HAND_REFINE_EVIDENCE_MIN_RUN="${GVHMR_VISIBLE_HAND_REFINE_EVIDENCE_MIN_RUN:-3}"
 GVHMR_DIAGNOSE_HAND="${GVHMR_DIAGNOSE_HAND:-0}"
 GVHMR_DIAGNOSE_HAND_WIDTH="${GVHMR_DIAGNOSE_HAND_WIDTH:-960}"
 GVHMR_HAND_REFINE_MODE="${GVHMR_HAND_REFINE_MODE:-raw}"
@@ -149,6 +195,8 @@ PHC_POST_SMOOTH_POSE_WINDOW="${PHC_POST_SMOOTH_POSE_WINDOW:-7}"
 PHC_POST_SMOOTH_TRANS_WINDOW="${PHC_POST_SMOOTH_TRANS_WINDOW:-5}"
 PHC_POST_SMOOTH_ACC_THRESHOLD="${PHC_POST_SMOOTH_ACC_THRESHOLD:-14.7}"
 PHC_POST_SMOOTH_ROOT_STEP_THRESHOLD="${PHC_POST_SMOOTH_ROOT_STEP_THRESHOLD:-30.0}"
+BODY_SMOOTH_POSE_WINDOW="${BODY_SMOOTH_POSE_WINDOW:-11}"
+BODY_SMOOTH_TRANS_WINDOW="${BODY_SMOOTH_TRANS_WINDOW:-15}"
 PHC_POST_SMOOTH_JOINT_STEP_THRESHOLD="${PHC_POST_SMOOTH_JOINT_STEP_THRESHOLD:-30.0}"
 PHC_POST_SMOOTH_JOINT_ACC_THRESHOLD="${PHC_POST_SMOOTH_JOINT_ACC_THRESHOLD:-250.0}"
 PHC_POST_SMOOTH_MAD_MULTIPLIER="${PHC_POST_SMOOTH_MAD_MULTIPLIER:-6.0}"
@@ -190,8 +238,10 @@ GVHMR_HANDS_NPZ="$WORK/001_smplx_hands.npz"
 GVHMR_CAMERA_NPZ="$WORK/gvhmr_camera.npz"
 HAND_BACKEND_MARKER="$WORK/.hand_backend"
 HAND_CONFIG_MARKER="$WORK/.hand_config"
+GVHMR_INPUT_CACHE_MARKER="$WORK/.gvhmr_input_cache_v1"
 FILTER_CONFIG_MARKER="$WORK/.filter_config"
 FILTERED_RENDER_MARKER="$WORK/.filtered_render_config"
+GVHMR_CLIP_CACHE="$GVHMR_OUT/$VIDEO_NAME"
 
 HAND_CODE_FINGERPRINT="$(
     sha256sum \
@@ -199,6 +249,17 @@ HAND_CODE_FINGERPRINT="$(
         "$GVHMR/tools/processor/run_hand4wholepp_video.py" 2>/dev/null |
         sha256sum | cut -d' ' -f1
 )"
+HAND_AUX_CODE_FINGERPRINT="$(sha256sum "$GVHMR/tools/processor/hand_bbox_tracking.py" "$GVHMR/third-party/Hand4Whole-plus-plus_RELEASE/main/model.py" 2>/dev/null | sha256sum | cut -d' ' -f1)"
+HAND_CROP_TRACKING_FINGERPRINT="${GVHMR_HAND4WHOLEPP_CROP_TRACKING}|${GVHMR_HAND4WHOLEPP_CROP_TRACKING_MAX_GAP}|${GVHMR_HAND4WHOLEPP_CROP_TRACKING_MAX_PREDICTION_GAP}|${GVHMR_HAND4WHOLEPP_CROP_TRACKING_DIRECT_OBSERVATION_QUALITY}"
+VIDEO_INPUT_FINGERPRINT="$({
+    realpath "$VIDEO"
+    stat -c '%s:%Y' "$VIDEO"
+    if [ -f "${VIDEO}.config" ]; then
+        sha256sum "${VIDEO}.config"
+    fi
+} | sha256sum | cut -d' ' -f1)"
+GVHMR_INPUT_CACHE_MARKER_VALUE="schema=1 video=$VIDEO_INPUT_FINGERPRINT"
+
 HAND_ASSET_FINGERPRINT="$(
     for asset in \
         "$GVHMR/inputs/checkpoints/vitpose/vitpose-h-coco-wholebody.pth" \
@@ -213,6 +274,7 @@ HAND_CONFIG_TEXT="$(
     printf '%s\n' \
         "code=$HAND_CODE_FINGERPRINT" \
         "assets=$HAND_ASSET_FINGERPRINT" \
+        "video=$VIDEO_INPUT_FINGERPRINT" \
         "backend=$GVHMR_HAND_BACKEND" \
         "vitpose_img_ds=$GVHMR_VITPOSE_IMG_DS" \
         "hand_kpt_conf_thr=$GVHMR_HAND_KPT_CONF_THR" \
@@ -239,7 +301,7 @@ HAND_CONFIG_TEXT="$(
         "hand4wholepp_yolo=$GVHMR_HAND4WHOLEPP_YOLO_MODEL" \
         "hand4wholepp_joint_source=$GVHMR_HAND4WHOLEPP_JOINT_SOURCE"
 )"
-HAND_CONFIG_FINGERPRINT="$(printf '%s' "$HAND_CONFIG_TEXT" | sha256sum | cut -d' ' -f1)"
+HAND_CONFIG_FINGERPRINT="$(printf '%s\n%s\n%s' "$HAND_CONFIG_TEXT" "$HAND_AUX_CODE_FINGERPRINT" "$HAND_CROP_TRACKING_FINGERPRINT" | sha256sum | cut -d' ' -f1)"
 USE_GVHMR_CAMERA=0
 if [ "$ISAAC_CAMERA_MODE" = "gvhmr" ] || [ "$ISAAC_CAMERA_MODE" = "gvhmr_static" ]; then
     USE_GVHMR_CAMERA=1
@@ -252,6 +314,8 @@ LOCO_IN="$WORK/locomotion_in"
 LOCO_OUT="$WORK/locomotion"
 LOCO_NPZ="$LOCO_OUT/optimizer/results_filter/001/001_optimized.npz"
 SMOOTH_NPZ="$WORK/001_smoothed.npz"
+FINAL_NPZ="$WORK/001_final.npz"
+FINAL_SELECTION_JSON="$WORK/final_motion_selection.json"
 
 PHC_IN="$WORK/phc_in"
 PHC_OUT="$WORK/phc_repaired"
@@ -266,6 +330,20 @@ COMPARISON_MP4="$WORK/${VIDEO_NAME}_comparison.mp4"
 
 find_first() {
     find "$1" -name "$2" -print -quit 2>/dev/null
+}
+
+write_gvhmr_input_cache_marker() {
+    local marker_tmp
+    marker_tmp="$(mktemp "${GVHMR_INPUT_CACHE_MARKER}.tmp.XXXXXX")" || {
+        err "Failed to create GVHMR input-cache marker temporary file"
+        exit 1
+    }
+    if ! printf '%s\n' "$GVHMR_INPUT_CACHE_MARKER_VALUE" > "$marker_tmp"; then
+        rm -f -- "$marker_tmp"
+        err "Failed to write GVHMR input-cache marker"
+        exit 1
+    fi
+    mv -f -- "$marker_tmp" "$GVHMR_INPUT_CACHE_MARKER"
 }
 
 find_latest_repaired_npz() {
@@ -324,6 +402,31 @@ ground_fix_npz() {
     fi
 }
 
+publish_final_motion() {
+    local selected="$1"
+    local reason="$2"
+    local selected_real stage link_tmp json_tmp
+    [ -f "$selected" ] || { err "final motion source is missing: $selected"; exit 1; }
+    selected_real="$(realpath "$selected")"
+    case "$(basename "$selected_real")" in
+        001_phc_smoothed_grounded.npz) stage="phc_smoothed_grounded" ;;
+        001_phc_smoothed.npz) stage="phc_smoothed" ;;
+        001_phc_grounded.npz) stage="phc_grounded" ;;
+        001_phc.npz|*_repaired.npz|*_validated.npz) stage="phc" ;;
+        001_smoothed.npz) stage="smoothed" ;;
+        *) stage="unknown" ;;
+    esac
+    link_tmp="${FINAL_NPZ}.tmp.$$"
+    json_tmp="${FINAL_SELECTION_JSON}.tmp.$$"
+    rm -f -- "$link_tmp" "$json_tmp"
+    ln -s "$selected_real" "$link_tmp"
+    mv -fT "$link_tmp" "$FINAL_NPZ"
+    printf '{"schema_version":1,"selected_stage":"%s","selection_reason":"%s","selected_file":"%s"}\n' \
+        "$stage" "$reason" "$(basename "$selected_real")" > "$json_tmp"
+    mv -fT "$json_tmp" "$FINAL_SELECTION_JSON"
+    ok "Final motion selection: $stage ($reason) -> $FINAL_NPZ"
+}
+
 echo ""
 echo "============================================================"
 echo "  Hand pipeline: Video -> GVHMR-hand -> Locomotion -> PHC"
@@ -339,9 +442,31 @@ elif [ "$GVHMR_HAND_BACKEND" = "hand4wholepp" ]; then
 fi
 mkdir -p "$WORK" "$GVHMR_OUT" "$LOCO_IN/001" "$PHC_IN/001" "$PHC_OUT/001"
 
+# generate_smplxs caches ViTPose, ViT features, and MANO sidecars below the
+# per-video GVHMR directory.  A work-video re-encode (for example 25 -> 30
+# FPS) changes the frame count, so mixing a newly generated MANO file with an
+# old ViTPose cache causes temporal filters to fail with incompatible lengths.
+GVHMR_INPUT_CACHE_MATCH=0
+if [ -f "$GVHMR_INPUT_CACHE_MARKER" ] && [ "$(cat "$GVHMR_INPUT_CACHE_MARKER")" = "$GVHMR_INPUT_CACHE_MARKER_VALUE" ]; then
+    GVHMR_INPUT_CACHE_MATCH=1
+fi
+if [ "$GVHMR_INPUT_CACHE_MATCH" != "1" ] && [ -d "$GVHMR_CLIP_CACHE" ]; then
+    GVHMR_OUT_REAL="$(realpath -m "$GVHMR_OUT")"
+    GVHMR_CLIP_CACHE_REAL="$(realpath -m "$GVHMR_CLIP_CACHE")"
+    if [ "$(dirname "$GVHMR_CLIP_CACHE_REAL")" != "$GVHMR_OUT_REAL" ]; then
+        err "Refusing to clear unsafe GVHMR cache path: $GVHMR_CLIP_CACHE_REAL"
+        exit 1
+    fi
+    warn "GVHMR input-cache marker changed; clearing stale GVHMR cache: $GVHMR_CLIP_CACHE_REAL"
+    rm -rf -- "$GVHMR_CLIP_CACHE_REAL"
+fi
+
 # ---------------------------------------------------------------------------
 # Stage 1: GVHMR-hand inference
 # ---------------------------------------------------------------------------
+CONVERT_RAN=0
+LOCO_RAN=0
+SMOOTH_RAN=0
 GVHMR_RESULTS="$(find_first "$GVHMR_OUT" "hmr4d_results.pt")"
 MANO_PARAMS="$(find_first "$GVHMR_OUT" "mano_params.pt")"
 VITPOSE_WHOLEBODY="$(find_first "$GVHMR_OUT" "vitpose_wholebody.pt")"
@@ -361,12 +486,12 @@ if [ -f "$HAND_CONFIG_MARKER" ] && [ "$(cat "$HAND_CONFIG_MARKER")" = "$HAND_CON
 fi
 
 if [ "$SKIP_EXISTING" = "1" ] && [ "$GVHMR_FORCE_HAND_PREPROCESS" != "1" ] && \
-   [ "$BACKEND_MATCH" = "1" ] && [ "$HAND_CONFIG_MATCH" = "1" ] && \
+   [ "$BACKEND_MATCH" = "1" ] && [ "$HAND_CONFIG_MATCH" = "1" ] && [ "$GVHMR_INPUT_CACHE_MATCH" = "1" ] && \
    [ -f "${GVHMR_RESULTS:-}" ] && [ -f "${MANO_PARAMS:-}" ] && \
    [ "$GVHMR_RENDER_READY" = "1" ]; then
     ok "GVHMR-hand results already exist (backend: $GVHMR_HAND_BACKEND)"
-    echo "$GVHMR_HAND_BACKEND" > "$HAND_BACKEND_MARKER"
-    echo "$HAND_CONFIG_FINGERPRINT" > "$HAND_CONFIG_MARKER"
+    printf '%s\n' "$GVHMR_HAND_BACKEND" > "$HAND_BACKEND_MARKER"
+    printf '%s\n' "$HAND_CONFIG_FINGERPRINT" > "$HAND_CONFIG_MARKER"
 else
     if [ "$SKIP_EXISTING" = "1" ] && [ -f "${MANO_PARAMS:-}" ] && [ "$BACKEND_MATCH" = "0" ]; then
         warn "Hand backend changed (marker: $(cat "$HAND_BACKEND_MARKER" 2>/dev/null || echo 'none') -> $GVHMR_HAND_BACKEND); forcing re-process"
@@ -374,6 +499,10 @@ else
         warn "Hand inference config changed; forcing hand preprocess"
     fi
     FORCE_HAND_THIS_RUN="$GVHMR_FORCE_HAND_PREPROCESS"
+    if [ "$GVHMR_INPUT_CACHE_MATCH" != "1" ]; then
+        warn "GVHMR input cache marker is absent or mismatched; forcing hand preprocess"
+        FORCE_HAND_THIS_RUN=1
+    fi
     if [ -f "${MANO_PARAMS:-}" ] && { [ "$BACKEND_MATCH" = "0" ] || [ "$HAND_CONFIG_MATCH" = "0" ]; }; then
         FORCE_HAND_THIS_RUN=1
     fi
@@ -403,6 +532,7 @@ else
             require_file "$GVHMR_HAND4WHOLEPP_ROOT/main/model.py" "Hand4Whole++ source; run scripts/setup_hand4wholepp_assets.sh"
             require_file "$GVHMR_HAND4WHOLEPP_SNAPSHOT" "Hand4Whole++ snapshot_6.pth"
             require_file "$GVHMR_HAND4WHOLEPP_ROOT/common/nets/WiLoR/pretrained_models/wilor_final.ckpt" "Hand4Whole++ WiLoR checkpoint link"
+            require_file "$GVHMR_HAND4WHOLEPP_ROOT/common/nets/WiLoR/pretrained_models/detector.pt" "Hand4Whole++ WiLoR detector checkpoint"
             require_file "$GVHMR_HAND4WHOLEPP_ROOT/common/nets/mmpose/dw-ll_ucoco.pth" "Hand4Whole++ DWPose checkpoint"
             require_file "$GVHMR_HAND4WHOLEPP_ROOT/common/utils/human_model_files/smpl/SMPL_NEUTRAL.pkl" "Hand4Whole++ SMPL_NEUTRAL.pkl"
             require_file "$GVHMR_HAND4WHOLEPP_ROOT/common/utils/human_model_files/smplx/SMPLX_NEUTRAL.pkl" "Hand4Whole++ SMPLX_NEUTRAL.pkl"
@@ -441,6 +571,10 @@ else
         --hand4wholepp_batch_size "$GVHMR_HAND4WHOLEPP_BATCH_SIZE"
         --hand4wholepp_yolo_model "$GVHMR_HAND4WHOLEPP_YOLO_MODEL"
         --hand4wholepp_joint_source "$GVHMR_HAND4WHOLEPP_JOINT_SOURCE"
+        --hand4wholepp_crop_tracking "$GVHMR_HAND4WHOLEPP_CROP_TRACKING"
+        --hand4wholepp_crop_tracking_max_gap "$GVHMR_HAND4WHOLEPP_CROP_TRACKING_MAX_GAP"
+        --hand4wholepp_crop_tracking_max_prediction_gap "$GVHMR_HAND4WHOLEPP_CROP_TRACKING_MAX_PREDICTION_GAP"
+        --hand4wholepp_crop_tracking_direct_observation_quality "$GVHMR_HAND4WHOLEPP_CROP_TRACKING_DIRECT_OBSERVATION_QUALITY"
         --vitpose_img_ds "$GVHMR_VITPOSE_IMG_DS"
         --hand_kpt_conf_thr "$GVHMR_HAND_KPT_CONF_THR"
         --hand_kpt_low_conf_thr "$GVHMR_HAND_KPT_LOW_CONF_THR"
@@ -466,7 +600,9 @@ else
     if [ "$GVHMR_SKIP_RENDER" = "1" ] || \
        [ "$GVHMR_FILTER_MANO_WRIST" = "1" ] || \
        [ "$GVHMR_FILTER_MANO_TEMPORAL" = "1" ] || \
-       [ "$GVHMR_FILTER_MANO_FINGERS" = "1" ]; then
+       [ "$GVHMR_FILTER_MANO_FINGERS" = "1" ] || \
+       [ "$GVHMR_VISIBLE_HAND_REFINE" = "1" ] || \
+       [ "$GVHMR_RECOMPUTE_DIRECT_MANO" = "1" ]; then
         GVHMR_CMD+=(--skip_render)
     fi
     [ "$GVHMR_LOW_MEMORY" = "1" ] && GVHMR_CMD+=(--low_memory)
@@ -500,13 +636,16 @@ else
         "${GVHMR_CMD[@]}" 2>&1 || { err "GVHMR-hand inference failed"; exit 1; }
     fi
     ok "GVHMR-hand inference complete"
-    echo "$GVHMR_HAND_BACKEND" > "$HAND_BACKEND_MARKER"
-    echo "$HAND_CONFIG_FINGERPRINT" > "$HAND_CONFIG_MARKER"
 
     GVHMR_RESULTS="$(find_first "$GVHMR_OUT" "hmr4d_results.pt")"
     MANO_PARAMS="$(find_first "$GVHMR_OUT" "mano_params.pt")"
     VITPOSE_WHOLEBODY="$(find_first "$GVHMR_OUT" "vitpose_wholebody.pt")"
     GVHMR_INCAM="$(find_first "$GVHMR_OUT" "1_incam.mp4")"
+    [ -f "${GVHMR_RESULTS:-}" ] || { err "GVHMR-hand inference returned no hmr4d_results.pt"; exit 1; }
+    [ -f "${VITPOSE_WHOLEBODY:-}" ] || { err "GVHMR-hand inference returned no vitpose_wholebody.pt"; exit 1; }
+    printf '%s\n' "$GVHMR_HAND_BACKEND" > "$HAND_BACKEND_MARKER"
+    printf '%s\n' "$HAND_CONFIG_FINGERPRINT" > "$HAND_CONFIG_MARKER"
+    write_gvhmr_input_cache_marker
 fi
 
 [ -f "${GVHMR_RESULTS:-}" ] || { err "hmr4d_results.pt not found"; exit 1; }
@@ -518,6 +657,9 @@ FILTER_CONFIG_TEXT="$(
             "$GVHMR/tools/processor/filter_mano_wrist.py" \
             "$GVHMR/tools/processor/filter_mano_temporal.py" \
             "$GVHMR/tools/processor/filter_mano_fingers.py" \
+            "$GVHMR/tools/processor/visible_hand_evidence.py" \
+            "$GVHMR/tools/processor/refine_visible_hand_orientation.py" \
+            "$GVHMR/tools/processor/recompute_direct_mano_joints.py" \
             "${SCRIPT_DIR}/convert_to_npz.py" 2>/dev/null |
             sha256sum | cut -d' ' -f1
     )"
@@ -536,14 +678,22 @@ FILTER_CONFIG_TEXT="$(
         "temporal_bbox=$GVHMR_TEMPORAL_FILTER_BBOX_WINDOW,$GVHMR_TEMPORAL_FILTER_BBOX_SHRINK_RATIO,$GVHMR_TEMPORAL_FILTER_MIN_BBOX_FOREARM_RATIO,$GVHMR_TEMPORAL_FILTER_BBOX_JUMP_RATIO,$GVHMR_TEMPORAL_FILTER_BBOX_OVERLAP_IOU" \
         "temporal_floor=$GVHMR_TEMPORAL_FILTER_BBOX_SIZE_FLOOR_RATIO,$GVHMR_TEMPORAL_FILTER_BBOX_SIZE_FLOOR_MIN_FOREARM_RATIO" \
         "temporal_fill=$GVHMR_TEMPORAL_FILTER_MAX_INTERP_GAP,$GVHMR_TEMPORAL_FILTER_MAX_EDGE_HOLD" \
+        "temporal_global_orient_fill=$GVHMR_TEMPORAL_FILTER_GLOBAL_ORIENT_FILL_MODE" \
         "finger_filter=$GVHMR_FILTER_MANO_FINGERS" \
         "finger_window=$GVHMR_FINGER_FILTER_SMOOTH_WINDOW" \
         "finger_weights=$GVHMR_FINGER_FILTER_RELIABLE_SMOOTH_WEIGHT,$GVHMR_FINGER_FILTER_WEAK_SMOOTH_WEIGHT,$GVHMR_FINGER_FILTER_BAD_SMOOTH_WEIGHT" \
         "finger_fill=$GVHMR_FINGER_FILTER_MAX_INTERP_GAP,$GVHMR_FINGER_FILTER_MAX_EDGE_HOLD" \
         "finger_limits=$GVHMR_FINGER_FILTER_MAX_JOINT_ANGLE_DELTA,$GVHMR_FINGER_FILTER_MAX_JOINT_XYZ_DELTA" \
         "wrist_smooth=$GVHMR_FINGER_FILTER_WRIST_SMOOTH_WINDOW,$GVHMR_FINGER_FILTER_WRIST_RELIABLE_SMOOTH_WEIGHT,$GVHMR_FINGER_FILTER_WRIST_WEAK_SMOOTH_WEIGHT,$GVHMR_FINGER_FILTER_WRIST_BAD_SMOOTH_WEIGHT,$GVHMR_FINGER_FILTER_MAX_WRIST_ANGLE_DELTA" \
+        "wrist_mode=$GVHMR_FINGER_FILTER_WRIST_MODE" \
         "finger_floor=$GVHMR_FINGER_FILTER_HAND_SIZE_FLOOR_RATIO" \
-        "finger_open=$GVHMR_FINGER_FILTER_OPEN_RESCUE_WEIGHT,$GVHMR_FINGER_FILTER_OPEN_RESCUE_SMOOTH_WEIGHT" \
+        "finger_open=$GVHMR_FINGER_FILTER_OPEN_RESCUE_ENABLED,$GVHMR_FINGER_FILTER_OPEN_RESCUE_WEIGHT,$GVHMR_FINGER_FILTER_OPEN_RESCUE_SMOOTH_WEIGHT" \
+        "final_finger_smooth_after_visible_refine=$GVHMR_FINAL_FINGER_SMOOTH_AFTER_VISIBLE_REFINE,$GVHMR_FINAL_FINGER_SMOOTH_WINDOW,$GVHMR_FINAL_FINGER_RELIABLE_SMOOTH_WEIGHT,$GVHMR_FINAL_FINGER_WEAK_SMOOTH_WEIGHT,$GVHMR_FINAL_FINGER_BAD_SMOOTH_WEIGHT" \
+        "visible_refine=$GVHMR_VISIBLE_HAND_REFINE,$GVHMR_VISIBLE_HAND_REFINE_DEVICE,$GVHMR_VISIBLE_HAND_REFINE_BATCH_SIZE,$GVHMR_VISIBLE_HAND_REFINE_STEPS,$GVHMR_VISIBLE_HAND_REFINE_LR,$GVHMR_VISIBLE_HAND_REFINE_PRIOR_WEIGHT" \
+        "visible_refine_fit=$GVHMR_VISIBLE_HAND_REFINE_FIT_CONFIDENCE,$GVHMR_VISIBLE_HAND_REFINE_FIT_MIN_KEYPOINTS,$GVHMR_VISIBLE_HAND_REFINE_FIT_PARTITION,$GVHMR_VISIBLE_HAND_REFINE_HOLDOUT_MIN_KEYPOINTS,$GVHMR_VISIBLE_HAND_REFINE_HOLDOUT_MAX_RELATIVE_REGRESSION_PX,$GVHMR_VISIBLE_HAND_REFINE_MAX_DELTA_DEGREES,$GVHMR_VISIBLE_HAND_REFINE_MIN_RELATIVE_IMPROVEMENT,$GVHMR_VISIBLE_HAND_REFINE_MIN_RELATIVE_IMPROVEMENT_PX,$GVHMR_VISIBLE_HAND_REFINE_MAX_ABSOLUTE_REGRESSION_PX" \
+        "visible_refine_anchor=$GVHMR_VISIBLE_HAND_REFINE_MAX_ANCHOR_ERROR_PX,$GVHMR_VISIBLE_HAND_REFINE_MAX_ANCHOR_ERROR_BBOX_RATIO" \
+        "visible_refine_evidence=$GVHMR_VISIBLE_HAND_REFINE_EVIDENCE_HAND_CONFIDENCE,$GVHMR_VISIBLE_HAND_REFINE_EVIDENCE_MIN_KEYPOINTS,$GVHMR_VISIBLE_HAND_REFINE_EVIDENCE_MEAN_CONFIDENCE,$GVHMR_VISIBLE_HAND_REFINE_EVIDENCE_WRIST_CONFIDENCE,$GVHMR_VISIBLE_HAND_REFINE_EVIDENCE_MIN_BBOX_DIAGONAL_PX,$GVHMR_VISIBLE_HAND_REFINE_EVIDENCE_MIN_RUN" \
+        "direct_mano_recompute=$GVHMR_RECOMPUTE_DIRECT_MANO,$GVHMR_RECOMPUTE_DIRECT_MANO_BATCH_SIZE" \
         "sidecar_refine=$GVHMR_HAND_REFINE_MODE,$GVHMR_HAND_REPROJ_ERROR_THR,$GVHMR_HAND_REPROJ_ERROR_RATIO_THR,$GVHMR_HAND_SPIKE_MAD_MULTIPLIER,$GVHMR_HAND_SPIKE_ABS_THRESHOLD,$GVHMR_HAND_REFINE_GAP_MERGE,$GVHMR_HAND_REFINE_MAX_BURST,$GVHMR_HAND_REFINE_SMOOTH_WINDOW" \
         "wrist_offset=$GVHMR_HAND_BACKEND,$GVHMR_HAND_WRIST_OFFSET_MODE,$GVHMR_HAND_WRIST_OFFSET_SMOOTH_WINDOW" \
         "export=$GVHMR_EXPORT_FPS,$GVHMR_PERSON_IDX" \
@@ -554,6 +704,42 @@ FILTER_CONFIG_OK=0
 if [ -f "$FILTER_CONFIG_MARKER" ] && [ "$(cat "$FILTER_CONFIG_MARKER")" = "$FILTER_FINGERPRINT" ]; then
     FILTER_CONFIG_OK=1
 fi
+
+case "$GVHMR_RECOMPUTE_DIRECT_MANO" in
+    0|1) ;;
+    *) err "GVHMR_RECOMPUTE_DIRECT_MANO must be 0 or 1, got: $GVHMR_RECOMPUTE_DIRECT_MANO"; exit 1 ;;
+esac
+
+case "$GVHMR_VISIBLE_HAND_REFINE" in
+    0|1) ;;
+    *) err "GVHMR_VISIBLE_HAND_REFINE must be 0 or 1, got: $GVHMR_VISIBLE_HAND_REFINE"; exit 1 ;;
+esac
+case "$GVHMR_FINAL_FINGER_SMOOTH_AFTER_VISIBLE_REFINE" in
+    0|1) ;;
+    *) err "GVHMR_FINAL_FINGER_SMOOTH_AFTER_VISIBLE_REFINE must be 0 or 1, got: $GVHMR_FINAL_FINGER_SMOOTH_AFTER_VISIBLE_REFINE"; exit 1 ;;
+esac
+if [ "$GVHMR_VISIBLE_HAND_REFINE" = "1" ] && [ "$GVHMR_HAND_BACKEND" != "hand4wholepp" ]; then
+    err "GVHMR_VISIBLE_HAND_REFINE=1 currently requires GVHMR_HAND_BACKEND=hand4wholepp"
+    exit 1
+fi
+if [ "$GVHMR_VISIBLE_HAND_REFINE" = "1" ] && [ "$GVHMR_RECOMPUTE_DIRECT_MANO" != "1" ]; then
+    err "GVHMR_VISIBLE_HAND_REFINE=1 requires GVHMR_RECOMPUTE_DIRECT_MANO=1"
+    exit 1
+fi
+case "$GVHMR_VISIBLE_HAND_REFINE_FIT_PARTITION" in
+    all|non_tip) ;;
+    *) err "GVHMR_VISIBLE_HAND_REFINE_FIT_PARTITION must be all or non_tip, got: $GVHMR_VISIBLE_HAND_REFINE_FIT_PARTITION"; exit 1 ;;
+esac
+
+case "$GVHMR_TEMPORAL_FILTER_GLOBAL_ORIENT_FILL_MODE" in
+    interpolate|preserve) ;;
+    *) err "GVHMR_TEMPORAL_FILTER_GLOBAL_ORIENT_FILL_MODE must be interpolate or preserve, got: $GVHMR_TEMPORAL_FILTER_GLOBAL_ORIENT_FILL_MODE"; exit 1 ;;
+esac
+
+case "$GVHMR_FINGER_FILTER_WRIST_MODE" in
+    smooth|preserve) ;;
+    *) err "GVHMR_FINGER_FILTER_WRIST_MODE must be smooth or preserve, got: $GVHMR_FINGER_FILTER_WRIST_MODE"; exit 1 ;;
+esac
 
 MANO_TRACK_LABEL="raw"
 if [ "$GVHMR_FILTER_MANO_WRIST" = "1" ] && [ -f "${MANO_PARAMS:-}" ]; then
@@ -618,7 +804,8 @@ if [ "$GVHMR_FILTER_MANO_TEMPORAL" = "1" ] && [ -f "${MANO_PARAMS:-}" ]; then
                     --bbox_size_floor_ratio "$GVHMR_TEMPORAL_FILTER_BBOX_SIZE_FLOOR_RATIO" \
                     --bbox_size_floor_min_forearm_ratio "$GVHMR_TEMPORAL_FILTER_BBOX_SIZE_FLOOR_MIN_FOREARM_RATIO" \
                     --max_interp_gap "$GVHMR_TEMPORAL_FILTER_MAX_INTERP_GAP" \
-                    --max_edge_hold "$GVHMR_TEMPORAL_FILTER_MAX_EDGE_HOLD"
+                    --max_edge_hold "$GVHMR_TEMPORAL_FILTER_MAX_EDGE_HOLD" \
+                    --global_orient_fill_mode "$GVHMR_TEMPORAL_FILTER_GLOBAL_ORIENT_FILL_MODE"
             )
         fi
         MANO_PARAMS="$MANO_TEMPORAL_FIXED"
@@ -652,6 +839,7 @@ if [ "$GVHMR_FILTER_MANO_FINGERS" = "1" ] && [ -f "${MANO_PARAMS:-}" ]; then
                     --reliable_smooth_weight "$GVHMR_FINGER_FILTER_RELIABLE_SMOOTH_WEIGHT" \
                     --weak_smooth_weight "$GVHMR_FINGER_FILTER_WEAK_SMOOTH_WEIGHT" \
                     --bad_smooth_weight "$GVHMR_FINGER_FILTER_BAD_SMOOTH_WEIGHT" \
+                    --open_rescue_enabled "$GVHMR_FINGER_FILTER_OPEN_RESCUE_ENABLED" \
                     --open_rescue_weight "$GVHMR_FINGER_FILTER_OPEN_RESCUE_WEIGHT" \
                     --open_rescue_smooth_weight "$GVHMR_FINGER_FILTER_OPEN_RESCUE_SMOOTH_WEIGHT" \
                     --max_joint_angle_delta "$GVHMR_FINGER_FILTER_MAX_JOINT_ANGLE_DELTA" \
@@ -661,6 +849,7 @@ if [ "$GVHMR_FILTER_MANO_FINGERS" = "1" ] && [ -f "${MANO_PARAMS:-}" ]; then
                     --wrist_weak_smooth_weight "$GVHMR_FINGER_FILTER_WRIST_WEAK_SMOOTH_WEIGHT" \
                     --wrist_bad_smooth_weight "$GVHMR_FINGER_FILTER_WRIST_BAD_SMOOTH_WEIGHT" \
                     --max_wrist_angle_delta "$GVHMR_FINGER_FILTER_MAX_WRIST_ANGLE_DELTA" \
+                    --wrist_mode "$GVHMR_FINGER_FILTER_WRIST_MODE" \
                     --hand_size_floor_ratio "$GVHMR_FINGER_FILTER_HAND_SIZE_FLOOR_RATIO"
             )
         fi
@@ -669,8 +858,148 @@ if [ "$GVHMR_FILTER_MANO_FINGERS" = "1" ] && [ -f "${MANO_PARAMS:-}" ]; then
     fi
 fi
 
+if [ "$GVHMR_VISIBLE_HAND_REFINE" = "1" ] && [ -f "${MANO_PARAMS:-}" ]; then
+    VITPOSE_WHOLEBODY="$(find_first "$GVHMR_OUT" "vitpose_wholebody.pt")"
+    if [ ! -f "${VITPOSE_WHOLEBODY:-}" ]; then
+        err "GVHMR_VISIBLE_HAND_REFINE=1 requires vitpose_wholebody.pt"
+        exit 1
+    fi
+    MANO_VISIBLE_REFINED="${WORK}/mano_params_visible_refined.pt"
+    MANO_VISIBLE_SUMMARY="${WORK}/mano_params_visible_refined.json"
+    if [ "$SKIP_EXISTING" = "1" ] && [ "$GVHMR_FORCE_HAND_PREPROCESS" != "1" ] && \
+       [ "$FILTER_CONFIG_OK" = "1" ] && [ -f "$MANO_VISIBLE_REFINED" ] && \
+       [ -f "$MANO_VISIBLE_SUMMARY" ]; then
+        ok "Visible-hand refined MANO already exists: $MANO_VISIBLE_REFINED"
+    else
+        log ""
+        log "[1a] Refine high-evidence wrists in final render camera space"
+        (
+            cd "$GVHMR"
+            "$PY_GVHMR" -m tools.processor.refine_visible_hand_orientation \
+                --mano_params "$MANO_PARAMS" \
+                --hmr4d_results "$GVHMR_RESULTS" \
+                --vitpose_wholebody "$VITPOSE_WHOLEBODY" \
+                --output "$MANO_VISIBLE_REFINED" \
+                --summary "$MANO_VISIBLE_SUMMARY" \
+                --device "$GVHMR_VISIBLE_HAND_REFINE_DEVICE" \
+                --batch_size "$GVHMR_VISIBLE_HAND_REFINE_BATCH_SIZE" \
+                --steps "$GVHMR_VISIBLE_HAND_REFINE_STEPS" \
+                --lr "$GVHMR_VISIBLE_HAND_REFINE_LR" \
+                --prior_weight "$GVHMR_VISIBLE_HAND_REFINE_PRIOR_WEIGHT" \
+                --fit_confidence "$GVHMR_VISIBLE_HAND_REFINE_FIT_CONFIDENCE" \
+                --fit_min_keypoints "$GVHMR_VISIBLE_HAND_REFINE_FIT_MIN_KEYPOINTS" \
+                --fit_partition "$GVHMR_VISIBLE_HAND_REFINE_FIT_PARTITION" \
+                --holdout_min_keypoints "$GVHMR_VISIBLE_HAND_REFINE_HOLDOUT_MIN_KEYPOINTS" \
+                --holdout_max_relative_regression_px "$GVHMR_VISIBLE_HAND_REFINE_HOLDOUT_MAX_RELATIVE_REGRESSION_PX" \
+                --max_delta_degrees "$GVHMR_VISIBLE_HAND_REFINE_MAX_DELTA_DEGREES" \
+                --min_relative_improvement "$GVHMR_VISIBLE_HAND_REFINE_MIN_RELATIVE_IMPROVEMENT" \
+                --min_relative_improvement_px "$GVHMR_VISIBLE_HAND_REFINE_MIN_RELATIVE_IMPROVEMENT_PX" \
+                --max_absolute_regression_px "$GVHMR_VISIBLE_HAND_REFINE_MAX_ABSOLUTE_REGRESSION_PX" \
+                --max_anchor_error_px "$GVHMR_VISIBLE_HAND_REFINE_MAX_ANCHOR_ERROR_PX" \
+                --max_anchor_error_bbox_ratio "$GVHMR_VISIBLE_HAND_REFINE_MAX_ANCHOR_ERROR_BBOX_RATIO" \
+                --evidence_hand_confidence "$GVHMR_VISIBLE_HAND_REFINE_EVIDENCE_HAND_CONFIDENCE" \
+                --evidence_min_keypoints "$GVHMR_VISIBLE_HAND_REFINE_EVIDENCE_MIN_KEYPOINTS" \
+                --evidence_mean_confidence "$GVHMR_VISIBLE_HAND_REFINE_EVIDENCE_MEAN_CONFIDENCE" \
+                --evidence_wrist_confidence "$GVHMR_VISIBLE_HAND_REFINE_EVIDENCE_WRIST_CONFIDENCE" \
+                --evidence_min_bbox_diagonal_px "$GVHMR_VISIBLE_HAND_REFINE_EVIDENCE_MIN_BBOX_DIAGONAL_PX" \
+                --evidence_min_run "$GVHMR_VISIBLE_HAND_REFINE_EVIDENCE_MIN_RUN"
+        )
+    fi
+    [ -f "$MANO_VISIBLE_REFINED" ] || { err "Visible-hand refinement output not found"; exit 1; }
+    [ -f "$MANO_VISIBLE_SUMMARY" ] || { err "Visible-hand refinement summary not found"; exit 1; }
+    MANO_PARAMS="$MANO_VISIBLE_REFINED"
+    MANO_TRACK_LABEL="${MANO_TRACK_LABEL}_visible_refined"
+fi
+
+# Visible-hand refinement is an image-space per-frame correction. It runs
+# after the first finger filter and can therefore reintroduce tiny temporal
+# oscillations. Smooth its accepted MANO output once more before both the
+# GVHMR render and the direct-MANO sidecar are generated.
+if [ "$GVHMR_FINAL_FINGER_SMOOTH_AFTER_VISIBLE_REFINE" = "1" ] && \
+   [ "$GVHMR_VISIBLE_HAND_REFINE" = "1" ] && \
+   [ "$GVHMR_FILTER_MANO_FINGERS" = "1" ] && \
+   [ -f "${MANO_PARAMS:-}" ]; then
+    VITPOSE_WHOLEBODY="$(find_first "$GVHMR_OUT" "vitpose_wholebody.pt")"
+    if [ ! -f "${VITPOSE_WHOLEBODY:-}" ]; then
+        err "final MANO smoothing requires vitpose_wholebody.pt"
+        exit 1
+    fi
+    MANO_FINAL_FINGER_FIXED="${WORK}/mano_params_final_finger_smoothed.pt"
+    MANO_FINAL_FINGER_SUMMARY="${WORK}/mano_params_final_finger_smoothed.json"
+    if [ "$SKIP_EXISTING" = "1" ] && [ "$GVHMR_FORCE_HAND_PREPROCESS" != "1" ] && \
+       [ "$FILTER_CONFIG_OK" = "1" ] && [ -f "$MANO_FINAL_FINGER_FIXED" ] && \
+       [ -f "$MANO_FINAL_FINGER_SUMMARY" ]; then
+        ok "Final finger-smoothed MANO already exists: $MANO_FINAL_FINGER_FIXED"
+    else
+        log ""
+        log "[1a] Final temporal smoothing after visible-hand refinement"
+        (
+            cd "$GVHMR"
+            "$PY_GVHMR" -m tools.processor.filter_mano_fingers \
+                --mano_params "$MANO_PARAMS" \
+                --vitpose_wholebody "$VITPOSE_WHOLEBODY" \
+                --output "$MANO_FINAL_FINGER_FIXED" \
+                --summary "$MANO_FINAL_FINGER_SUMMARY" \
+                --hand_low_conf_thr "$GVHMR_HAND_KPT_LOW_CONF_THR" \
+                --hand_min_keypoints "$GVHMR_HAND_MIN_KEYPOINTS" \
+                --max_interp_gap "$GVHMR_FINGER_FILTER_MAX_INTERP_GAP" \
+                --max_edge_hold "$GVHMR_FINGER_FILTER_MAX_EDGE_HOLD" \
+                --smooth_window "$GVHMR_FINAL_FINGER_SMOOTH_WINDOW" \
+                --reliable_smooth_weight "$GVHMR_FINAL_FINGER_RELIABLE_SMOOTH_WEIGHT" \
+                --weak_smooth_weight "$GVHMR_FINAL_FINGER_WEAK_SMOOTH_WEIGHT" \
+                --bad_smooth_weight "$GVHMR_FINAL_FINGER_BAD_SMOOTH_WEIGHT" \
+                --open_rescue_enabled "$GVHMR_FINGER_FILTER_OPEN_RESCUE_ENABLED" \
+                --open_rescue_weight "$GVHMR_FINGER_FILTER_OPEN_RESCUE_WEIGHT" \
+                --open_rescue_smooth_weight "$GVHMR_FINGER_FILTER_OPEN_RESCUE_SMOOTH_WEIGHT" \
+                --max_joint_angle_delta "$GVHMR_FINGER_FILTER_MAX_JOINT_ANGLE_DELTA" \
+                --max_joint_xyz_delta "$GVHMR_FINGER_FILTER_MAX_JOINT_XYZ_DELTA" \
+                --wrist_smooth_window "$GVHMR_FINGER_FILTER_WRIST_SMOOTH_WINDOW" \
+                --wrist_reliable_smooth_weight "$GVHMR_FINGER_FILTER_WRIST_RELIABLE_SMOOTH_WEIGHT" \
+                --wrist_weak_smooth_weight "$GVHMR_FINGER_FILTER_WRIST_WEAK_SMOOTH_WEIGHT" \
+                --wrist_bad_smooth_weight "$GVHMR_FINGER_FILTER_WRIST_BAD_SMOOTH_WEIGHT" \
+                --max_wrist_angle_delta "$GVHMR_FINGER_FILTER_MAX_WRIST_ANGLE_DELTA" \
+                --wrist_mode "$GVHMR_FINGER_FILTER_WRIST_MODE" \
+                --hand_size_floor_ratio "$GVHMR_FINGER_FILTER_HAND_SIZE_FLOOR_RATIO"
+        )
+    fi
+    [ -f "$MANO_FINAL_FINGER_FIXED" ] || { err "Final finger smoothing output not found"; exit 1; }
+    [ -f "$MANO_FINAL_FINGER_SUMMARY" ] || { err "Final finger smoothing summary not found"; exit 1; }
+    MANO_PARAMS="$MANO_FINAL_FINGER_FIXED"
+    MANO_TRACK_LABEL="${MANO_TRACK_LABEL}_final_finger_smoothed"
+fi
+
+if [ "$GVHMR_RECOMPUTE_DIRECT_MANO" = "1" ] && [ -f "${MANO_PARAMS:-}" ]; then
+    if [ "$GVHMR_HAND_BACKEND" != "hand4wholepp" ]; then
+        err "GVHMR_RECOMPUTE_DIRECT_MANO=1 requires GVHMR_HAND_BACKEND=hand4wholepp"
+        exit 1
+    fi
+    MANO_DIRECT_RECOMPUTED="${WORK}/mano_params_direct_mano_recomputed.pt"
+    MANO_DIRECT_SUMMARY="${WORK}/mano_params_direct_mano_recomputed.json"
+    if [ "$SKIP_EXISTING" = "1" ] && [ "$GVHMR_FORCE_HAND_PREPROCESS" != "1" ] && \
+       [ "$FILTER_CONFIG_OK" = "1" ] && [ -f "$MANO_DIRECT_RECOMPUTED" ] && \
+       [ -f "$MANO_DIRECT_SUMMARY" ]; then
+        ok "Direct-MANO-recomputed joints already exist: $MANO_DIRECT_RECOMPUTED"
+    else
+        log ""
+        log "[1a] Recompute final Hand4Whole++ joints from final MANO pose"
+        (
+            cd "$GVHMR"
+            "$PY_GVHMR" "$GVHMR/tools/processor/recompute_direct_mano_joints.py" \
+                --mano_params "$MANO_PARAMS" \
+                --output "$MANO_DIRECT_RECOMPUTED" \
+                --summary "$MANO_DIRECT_SUMMARY" \
+                --hand4wholepp_root "$GVHMR_HAND4WHOLEPP_ROOT" \
+                --batch_size "$GVHMR_RECOMPUTE_DIRECT_MANO_BATCH_SIZE"
+        )
+    fi
+    [ -f "$MANO_DIRECT_RECOMPUTED" ] || { err "Direct-MANO recompute output not found"; exit 1; }
+    [ -f "$MANO_DIRECT_SUMMARY" ] || { err "Direct-MANO recompute summary not found"; exit 1; }
+    MANO_PARAMS="$MANO_DIRECT_RECOMPUTED"
+    MANO_TRACK_LABEL="${MANO_TRACK_LABEL}_direct_mano"
+fi
+
 if [ "$GVHMR_SKIP_RENDER" != "1" ] && \
-   { [ "$GVHMR_FILTER_MANO_WRIST" = "1" ] || [ "$GVHMR_FILTER_MANO_TEMPORAL" = "1" ] || [ "$GVHMR_FILTER_MANO_FINGERS" = "1" ]; } && \
+   { [ "$GVHMR_FILTER_MANO_WRIST" = "1" ] || [ "$GVHMR_FILTER_MANO_TEMPORAL" = "1" ] || [ "$GVHMR_FILTER_MANO_FINGERS" = "1" ] || [ "$GVHMR_VISIBLE_HAND_REFINE" = "1" ] || [ "$GVHMR_RECOMPUTE_DIRECT_MANO" = "1" ]; } && \
    [ -f "${MANO_PARAMS:-}" ]; then
     GVHMR_INCAM="$(find_first "$GVHMR_OUT" "1_incam.mp4")"
     FILTERED_RENDER_OK=0
@@ -768,6 +1097,7 @@ else
     "${CONVERT_CMD[@]}"
     ok "Converted body NPZ: $GVHMR_CONVERTED"
     ok "Preserved hand sidecar: $GVHMR_HANDS_NPZ"
+    CONVERT_RAN=1
     echo "$FILTER_FINGERPRINT" > "$FILTER_CONFIG_MARKER"
 fi
 
@@ -776,7 +1106,8 @@ LOCO_SOURCE="$GVHMR_CONVERTED"
 # ---------------------------------------------------------------------------
 # Stage 2: Locomotion height optimization
 # ---------------------------------------------------------------------------
-if [ "$SKIP_EXISTING" = "1" ] && [ "$FORCE_LOCO" != "1" ] && [ -f "$LOCO_NPZ" ]; then
+if [ "$SKIP_EXISTING" = "1" ] && [ "$FORCE_LOCO" != "1" ] && \
+   [ "$CONVERT_RAN" != "1" ] && [ -f "$LOCO_NPZ" ]; then
     ok "Locomotion already exists: $LOCO_NPZ"
 else
     log ""
@@ -810,9 +1141,12 @@ else
     if [ -z "$(find "$LOCO_OUT/optimizer/results_filter" -name "*optimized.npz" 2>/dev/null | head -1)" ] && \
        [ "$LOCO_DIAGNOSTICS_ENABLED" = "1" ]; then
         warn "Locomotion checks filtered the clip; retrying height-only"
+        printf '{"status":"degraded","stage":"locomotion","actual":"height_only","reason":"full_checks_filtered_clip"}
+' > "${WORK}/stage_status.json"
         "${LOCO_CMD_BASE[@]}" --check_penetration 0 --check_speed 0 --gravity_alignment 0 2>&1 || {
             err "Locomotion retry failed"; exit 1; }
     fi
+    LOCO_RAN=1
     ok "Locomotion complete"
 fi
 LOCO_NPZ="$(find "$LOCO_OUT/optimizer/results_filter" -name "*optimized.npz" 2>/dev/null | head -1)"
@@ -821,20 +1155,23 @@ LOCO_NPZ="$(find "$LOCO_OUT/optimizer/results_filter" -name "*optimized.npz" 2>/
 # ---------------------------------------------------------------------------
 # Stage 3: Temporal smoothing
 # ---------------------------------------------------------------------------
-if [ "$SKIP_EXISTING" = "1" ] && [ "$FORCE_LOCO" != "1" ] && [ "$FORCE_SMOOTH" != "1" ] && [ -f "$SMOOTH_NPZ" ]; then
+if [ "$SKIP_EXISTING" = "1" ] && [ "$FORCE_LOCO" != "1" ] && \
+   [ "$FORCE_SMOOTH" != "1" ] && [ "$LOCO_RAN" != "1" ] && \
+   [ -f "$SMOOTH_NPZ" ]; then
     ok "Smooth already exists: $SMOOTH_NPZ"
 else
     log ""
     log "[3/5] Savitzky-Golay smoothing"
     if run_phc_python "${LEGACY_PIPELINE}/smooth_motion.py" \
         --input "$LOCO_NPZ" --output "$SMOOTH_NPZ" \
-        --pose_window 11 --trans_window 15 \
+        --pose_window "$BODY_SMOOTH_POSE_WINDOW" --trans_window "$BODY_SMOOTH_TRANS_WINDOW" \
         --acc_threshold 10.0 --joint_acc_threshold 300.0 2>&1; then
         ok "Smooth complete: $SMOOTH_NPZ"
     else
         warn "Smoothing failed; using locomotion output"
         cp "$LOCO_NPZ" "$SMOOTH_NPZ"
     fi
+    SMOOTH_RAN=1
 fi
 FINAL_PRE_NPZ="$SMOOTH_NPZ"
 
@@ -871,13 +1208,19 @@ fi
 # Stage 4: PHC repair
 # ---------------------------------------------------------------------------
 FINAL_POST_NPZ="$FINAL_PRE_NPZ"
+FINAL_SELECTION_REASON="phc_not_run_fallback_smoothed"
 if [ "$SKIP_PHC" = "1" ]; then
     warn "Skipping PHC (SKIP_PHC=1)"
-elif [ "$SKIP_EXISTING" = "1" ] && [ "$FORCE_PHC" != "1" ] && [ -f "$PHC_SMOOTH_GROUNDED_NPZ" ]; then
+    FINAL_SELECTION_REASON="phc_disabled_fallback_smoothed"
+elif [ "$SKIP_EXISTING" = "1" ] && [ "$FORCE_PHC" != "1" ] && \
+     [ "$SMOOTH_RAN" != "1" ] && [ -f "$PHC_SMOOTH_GROUNDED_NPZ" ]; then
     FINAL_POST_NPZ="$PHC_SMOOTH_GROUNDED_NPZ"
+    FINAL_SELECTION_REASON="phc_cached"
     ok "PHC smoothed grounded already exists: $FINAL_POST_NPZ"
-elif [ "$SKIP_EXISTING" = "1" ] && [ "$FORCE_PHC" != "1" ] && [ -f "$PHC_GROUNDED_NPZ" ]; then
+elif [ "$SKIP_EXISTING" = "1" ] && [ "$FORCE_PHC" != "1" ] && \
+     [ "$SMOOTH_RAN" != "1" ] && [ -f "$PHC_GROUNDED_NPZ" ]; then
     FINAL_POST_NPZ="$PHC_GROUNDED_NPZ"
+    FINAL_SELECTION_REASON="phc_cached"
     ok "PHC grounded already exists: $FINAL_POST_NPZ"
 else
     log ""
@@ -942,13 +1285,20 @@ else
         if [ -n "$REPAIRED" ]; then
             FINAL_POST_NPZ="$REPAIRED"
             PHC_RAN=1
+            FINAL_SELECTION_REASON="phc_repaired"
             ok "PHC output: $FINAL_POST_NPZ"
             ground_fix_npz "$FINAL_POST_NPZ" "$PHC_GROUNDED_NPZ" "PHC export"
         else
             warn "No repaired output found; using pre-PHC NPZ"
+            FINAL_SELECTION_REASON="phc_no_output_fallback_smoothed"
+            printf '{"status":"degraded","stage":"phc","actual":"smoothed","reason":"phc_no_repaired_output"}
+' > "${WORK}/stage_status.json"
         fi
     else
         warn "PHC failed; using pre-PHC NPZ"
+        FINAL_SELECTION_REASON="phc_runtime_failed_fallback_smoothed"
+        printf '{"status":"degraded","stage":"phc","actual":"smoothed","reason":"phc_runtime_failed"}
+' > "${WORK}/stage_status.json"
     fi
 fi
 
@@ -973,6 +1323,12 @@ if [ "$PHC_RAN" = "1" ] && [ "$PHC_POST_SMOOTH" = "1" ] && [ -f "$FINAL_POST_NPZ
         warn "PHC spike smoothing failed; keeping original PHC output"
     fi
 fi
+
+# ``001_final.npz`` is a zero-copy, per-run selection point for downstream
+# consumers. It prevents stale PHC files from a previous attempt being chosen
+# when the current PHC invocation fails; GMR then deterministically receives
+# the smoothed track.
+publish_final_motion "$FINAL_POST_NPZ" "$FINAL_SELECTION_REASON"
 
 # ---------------------------------------------------------------------------
 # Stage 5: Comparison render

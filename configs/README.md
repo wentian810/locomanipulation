@@ -21,12 +21,20 @@ configs/default.yaml
 | `input.dataset_dir` | 原始视频目录 |
 | `input.extensions` | 扫描的视频扩展名 |
 | `input.clip_filter` | 文件名子串过滤；空字符串表示全部 |
+| `input.max_videos` | 在文件名排序和 `clip_filter` 后只取前 N 条；适合小批量验证 |
+| `input.fullbody_preflight.enabled` | 在昂贵的人体流程前启用 YOLO-Pose 全身准入检查 |
+| `input.fullbody_preflight.mode` | `gate` 排除不合格视频；`report` 仅记录、不拦截 |
+| `input.fullbody_preflight.model` | 本地 YOLO-Pose 权重；默认 `models/yolo11n-pose.pt` |
+| `input.fullbody_preflight.samples` | 每个视频均匀抽样的帧数，默认 32 |
+| `input.fullbody_preflight.min_*_ratio` | 主体、头部、左右手腕、左右脚踝与完整全身证据的最小覆盖率 |
 | `input.work_video.enabled` | 是否生成统一尺寸工作视频 |
 | `input.work_video.directory` | 工作视频缓存目录 |
 | `input.work_video.width/height` | 工作视频目标尺寸 |
 | `input.work_video.crf` | H.264 质量；越小质量越高、文件越大 |
 | `input.work_video.force` | 是否强制重新编码 |
 | `output.root` | 过程工作区；批处理配置应放在 `scratch/` |
+
+全身准入不是普通 YOLO 人框筛选：它在同一主体的时间采样中要求头部、左右手腕和左右脚踝证据。结果集中写到 `output.root/fullbody_preflight.csv` 与 `fullbody_preflight.jsonl`；被 `gate` 排除的片段不会进入 GVHMR、手部、PHC 或 GMR。
 
 ## 2. 最终资产与保留策略
 
@@ -41,18 +49,8 @@ configs/default.yaml
 | `product.require_preview` | 预览缺失是否使导出失败 |
 | `product.object_policy` | `exclude`、`if_valid` 或 `require_valid` |
 | `product.minimum_quality_status` | 商品最低自动质量结论：`warn` 或 `pass`；`fail` 永不导出 |
-| `product.require_commercial_clearance` | 权利未全部确认时是否拒绝导出 |
 | `retention.prune_workspace_after_export` | 校验成功后删除 `output.root/<clip>` |
 | `retention.prune_object_work_after_export` | 同时删除 `object.monocular.work_root/<clip>` |
-
-权利字段默认必须保持 `false`，只有取得并保存授权证据后才修改：
-
-| 参数 | 中文含义 |
-| --- | --- |
-| `rights.source_video_commercial_rights` | 已确认输入视频可商业使用 |
-| `rights.subject_release` | 已取得画面人物/受试者授权 |
-| `rights.gvhmr_commercial_license` | 已取得 GVHMR 商业许可 |
-| `rights.third_party_assets_reviewed` | 已核验其余模型和资产许可证 |
 
 ## 3. 自动质量评价
 
@@ -65,6 +63,15 @@ configs/default.yaml
 | `quality_evaluation.projection_samples` | 物体网格投影 IoU 的均匀抽样帧数 |
 | `weights.human_only.*` | 人体-only 的文件/身体/手/GMR/可视化权重 |
 | `weights.object.*` | 含物体的文件/身体/手/物体/接触/动态权重 |
+
+每次评价后，根目录只生成紧凑的 `quality_overview.csv` / `quality_overview.json`：
+
+- `score`：按上述权重得到的 0–100 管线质量分（PQI）；
+- `grade`：A–E 的便于记录等级；
+- `verdict`：`accept`、`review` 或 `reject`；
+- `weakest_stage` 和 `stage_overview`：直接指出最弱环节及每阶段的总览。
+
+每个 clip 的 `quality_report.json` 仍保存底层有效帧、重投影、四元数、关节范围等证据；它们不再被重复铺到批处理总表中。
 
 常用阈值：
 

@@ -22,7 +22,7 @@ source "${PIPELINE_ROOT}/GMR-master/configure_hand_model.sh"
 export GVHMR_HAND_BACKEND="wilor"
 source "${SCRIPT_DIR}/configure_hand_constraints.sh"
 export OUTPUT_BASE="${OUTPUT_BASE:-${PIPELINE_ROOT}/output_dir/dataset_new6_wilor_gmr_${GMR_HAND_MODEL}_aligned}"
-export GMR_ROBOT="${GMR_ROBOT:-unitree_h1_with_hand}"
+export GMR_ROBOT="${GMR_ROBOT:-unitree_g1}"
 export GMR_AUTO_HAND_NPZ=1
 export GMR_HAND_INVALID_MODE="${GMR_HAND_INVALID_MODE:-interp}"
 

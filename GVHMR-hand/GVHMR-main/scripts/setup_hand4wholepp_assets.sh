@@ -17,6 +17,10 @@ H4WPP_MMPOSE_URL="${H4WPP_MMPOSE_URL:-https://drive.google.com/file/d/1Rxjb9l5m4
 H4WPP_DWPOSE_URL="${H4WPP_DWPOSE_URL:-https://drive.google.com/file/d/1PHKN3p873dgCSh_YRsYqTZVj-kIbclRS/view?usp=sharing}"
 H4WPP_MMPOSE_ID="${H4WPP_MMPOSE_ID:-1Rxjb9l5m49lhoxfW0ohubl19vVRx9Q_n}"
 H4WPP_DWPOSE_ID="${H4WPP_DWPOSE_ID:-1PHKN3p873dgCSh_YRsYqTZVj-kIbclRS}"
+H4WPP_SNAPSHOT_SHA256="${H4WPP_SNAPSHOT_SHA256:-b18c956aa48835659e6dabcbf51e1286987bc192b8d545d77e58327731714ce9}"
+H4WPP_DWPOSE_SHA256="${H4WPP_DWPOSE_SHA256:-e9600664e7927229ed594197d552023e3be213f810beb38847a959ec8261e0f7}"
+H4WPP_WILOR_SHA256="${H4WPP_WILOR_SHA256:-3e97aafc7dd08d883a4cc5a027df61fdb6fda6136dbd1319405413862ada6bb2}"
+H4WPP_DETECTOR_SHA256="${H4WPP_DETECTOR_SHA256:-5ef3df44e42d2db52d4ffe91f83a22ce9925e2acc9abebf453f2c5d22e380033}"
 
 log() {
     printf '[setup_hand4wholepp_assets] %s\n' "$*"
@@ -51,6 +55,7 @@ link_file() {
 }
 
 clone_hand4wholepp() {
+    local fresh_checkout=0
     if [ -d "$H4W_ROOT/.git" ]; then
         log "Hand4Whole++ repo exists: $H4W_ROOT"
     else
@@ -59,6 +64,11 @@ clone_hand4wholepp() {
         git clone --filter=blob:none \
             https://github.com/mks0601/Hand4Whole-plus-plus_RELEASE.git \
             "$H4W_ROOT"
+        fresh_checkout=1
+    fi
+    if [ "$fresh_checkout" != "1" ] && [ "${H4W_REFRESH_SOURCE:-0}" != "1" ]; then
+        log "preserving existing Hand4Whole++ source; set H4W_REFRESH_SOURCE=1 to enforce $H4W_COMMIT and the pipeline patch"
+        return 0
     fi
     git -C "$H4W_ROOT" checkout --detach "$H4W_COMMIT"
     if git -C "$H4W_ROOT" apply --reverse --check "$H4W_PATCH" >/dev/null 2>&1; then
@@ -208,6 +218,63 @@ PY
     return 1
 }
 
+asset_sha256_matches() {
+    local path="$1"
+    local expected_sha256="$2"
+    [ -f "$path" ] && \
+        [ "$(sha256sum "$path" | cut -d' ' -f1)" = "$expected_sha256" ]
+}
+
+quarantine_invalid_asset() {
+    local path="$1"
+    local expected_sha256="$2"
+    local label="$3"
+    if [ -f "$path" ] && ! asset_sha256_matches "$path" "$expected_sha256"; then
+        local invalid_path="${path}.invalid.$(date +%Y%m%d%H%M%S)"
+        log "$label checksum mismatch; preserving it as $invalid_path"
+        mv "$path" "$invalid_path"
+    fi
+}
+
+sync_wilor_runtime_if_requested() {
+    if [ "${H4W_SYNC_WILOR:-0}" != "1" ]; then
+        return 0
+    fi
+
+    local source_root="$WILOR_ROOT/pretrained_models"
+    local target_root="$H4W_ROOT/common/nets/WiLoR/pretrained_models"
+    local source target expected label temporary
+    local specs=(
+        "wilor_final.ckpt:$H4WPP_WILOR_SHA256:WiLoR checkpoint"
+        "detector.pt:$H4WPP_DETECTOR_SHA256:WiLoR detector"
+    )
+    for spec in "${specs[@]}"; do
+        IFS=: read -r source expected label <<< "$spec"
+        source="$source_root/$source"
+        target="$target_root/$(basename "$source")"
+        if ! asset_sha256_matches "$source" "$expected"; then
+            log "$label is not verified in canonical WiLoR root: $source"
+            return 1
+        fi
+        if asset_sha256_matches "$target" "$expected"; then
+            log "$label runtime copy already verified: $target"
+            continue
+        fi
+        mkdir -p "$target_root"
+        quarantine_invalid_asset "$target" "$expected" "$label runtime copy"
+        temporary="${target}.part.$$"
+        rm -f "$temporary"
+        cp "$source" "$temporary"
+        if ! asset_sha256_matches "$temporary" "$expected"; then
+            rm -f "$temporary"
+            log "$label runtime copy failed checksum verification"
+            return 1
+        fi
+        mv "$temporary" "$target"
+        log "$label runtime copy synchronized and verified: $target"
+    done
+}
+
 download_hand4wholepp_if_requested() {
     if [ "${DOWNLOAD_H4WPP:-0}" != "1" ]; then
         return 0
@@ -225,7 +292,10 @@ EOF
 
     mkdir -p "$H4W_ROOT/demo" "$H4W_ROOT/common/nets/mmpose"
 
-    if [ ! -f "$H4W_ROOT/demo/snapshot_6.pth" ]; then
+    local snapshot="$H4W_ROOT/demo/snapshot_6.pth"
+    local dwpose="$H4W_ROOT/common/nets/mmpose/dw-ll_ucoco.pth"
+    quarantine_invalid_asset "$snapshot" "$H4WPP_SNAPSHOT_SHA256" "Hand4Whole++ snapshot"
+    if ! asset_sha256_matches "$snapshot" "$H4WPP_SNAPSHOT_SHA256"; then
         log "downloading Hand4Whole++ model folder"
         $gd --folder "$H4WPP_MODEL_URL" -O "$H4W_ROOT/demo" || log "Hand4Whole++ model folder download failed"
         local found_snapshot
@@ -234,11 +304,29 @@ EOF
             ln -sf "$(realpath "$found_snapshot")" "$H4W_ROOT/demo/snapshot_6.pth"
             log "linked snapshot_6.pth -> $(realpath "$found_snapshot")"
         fi
+        if ! asset_sha256_matches "$snapshot" "$H4WPP_SNAPSHOT_SHA256"; then
+            log "Hand4Whole++ snapshot is still missing or failed checksum verification"
+            return 1
+        fi
     fi
 
-    if [ ! -f "$H4W_ROOT/common/nets/mmpose/dw-ll_ucoco.pth" ]; then
+    quarantine_invalid_asset "$dwpose" "$H4WPP_DWPOSE_SHA256" "DWPose checkpoint"
+    if ! asset_sha256_matches "$dwpose" "$H4WPP_DWPOSE_SHA256"; then
+        local dwpose_part="${dwpose}.part.$$"
+        rm -f "$dwpose_part"
         log "downloading DWPose checkpoint"
-        $gd "$H4WPP_DWPOSE_ID" -O "$H4W_ROOT/common/nets/mmpose/dw-ll_ucoco.pth" || log "DWPose checkpoint download failed"
+        if ! $gd "$H4WPP_DWPOSE_ID" -O "$dwpose_part"; then
+            rm -f "$dwpose_part"
+            log "DWPose checkpoint download failed"
+            return 1
+        fi
+        if ! asset_sha256_matches "$dwpose_part" "$H4WPP_DWPOSE_SHA256"; then
+            rm -f "$dwpose_part"
+            log "DWPose checkpoint failed checksum verification"
+            return 1
+        fi
+        mv "$dwpose_part" "$dwpose"
+        log "DWPose checkpoint downloaded and verified"
     fi
 
     if [ ! -d "$H4W_ROOT/common/nets/mmpose/mmpose" ]; then
@@ -262,9 +350,16 @@ report_missing_official_assets() {
     local human_root="${H4W_ROOT}/common/utils/human_model_files"
     local missing=()
 
+    local snapshot="$H4W_ROOT/demo/snapshot_6.pth"
+    local dwpose="$H4W_ROOT/common/nets/mmpose/dw-ll_ucoco.pth"
+    local wilor="$H4W_ROOT/common/nets/WiLoR/pretrained_models/wilor_final.ckpt"
+    local detector="$H4W_ROOT/common/nets/WiLoR/pretrained_models/detector.pt"
+    asset_sha256_matches "$snapshot" "$H4WPP_SNAPSHOT_SHA256" || missing+=("$snapshot (missing or checksum mismatch)")
+    asset_sha256_matches "$dwpose" "$H4WPP_DWPOSE_SHA256" || missing+=("$dwpose (missing or checksum mismatch)")
+    asset_sha256_matches "$wilor" "$H4WPP_WILOR_SHA256" || missing+=("$wilor (missing or checksum mismatch; run scripts/setup_wilor_assets.sh and update the H4W runtime copy)")
+    asset_sha256_matches "$detector" "$H4WPP_DETECTOR_SHA256" || missing+=("$detector (missing or checksum mismatch; run scripts/setup_wilor_assets.sh and update the H4W runtime copy)")
+
     for path in \
-        "$H4W_ROOT/demo/snapshot_6.pth" \
-        "$H4W_ROOT/common/nets/mmpose/dw-ll_ucoco.pth" \
         "$H4W_ROOT/common/nets/mmpose/mmpose" \
         "$human_root/smplx/SMPLX_NEUTRAL.npz" \
         "$human_root/smplx/SMPLX_MALE.npz" \
@@ -317,6 +412,10 @@ After manual downloads, you can let this script link/unpack them:
 
 To try downloading the Google Drive assets with gdown:
   DOWNLOAD_H4WPP=1 bash scripts/setup_hand4wholepp_assets.sh
+
+If WiLoR/detector was downloaded or repaired under third-party/WiLoR, sync the
+actual Hand4Whole++ runtime copies afterwards:
+  H4W_SYNC_WILOR=1 bash scripts/setup_hand4wholepp_assets.sh
 EOF
     else
         log "all checked Hand4Whole++ assets are present"
@@ -328,6 +427,7 @@ link_wilor || true
 link_human_models || true
 link_optional_snapshot || true
 link_optional_manual_assets || true
+sync_wilor_runtime_if_requested
 download_hand4wholepp_if_requested || true
 report_missing_official_assets
 log "done"

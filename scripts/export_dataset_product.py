@@ -16,6 +16,7 @@ import json
 import os
 import pickle
 import shutil
+import sys
 import tempfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -24,15 +25,31 @@ from typing import Any, Iterable
 import numpy as np
 import yaml
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from source_provenance import build_source_provenance
+
 
 SCHEMA_VERSION = 1
 BODY_SOURCE_FILES = {
     "converted": "001_converted.npz",
     "smoothed": "001_smoothed.npz",
     "phc_smoothed": "001_phc_smoothed.npz",
+    "phc_smoothed_grounded": "001_phc_smoothed_grounded.npz",
+    "final": "001_final.npz",
 }
 ROBOT_MODELS = {
     "sharpa": (
+        "unitree_g1",
+        "GMR-master/assets/unitree_g1/g1_mocap_29dof.xml",
+    ),
+    "sharpa_g1": (
+        "unitree_g1",
+        "GMR-master/assets/unitree_g1/g1_mocap_29dof.xml",
+    ),
+    "sharpa_h1": (
         "unitree_h1_with_hand",
         "GMR-master/assets/unitree_h1/h1_with_hand.xml",
     ),
@@ -196,7 +213,18 @@ def _resolve_body_source(clip_dir: Path, source: str) -> tuple[Path, str]:
     for candidate in candidates:
         path = clip_dir / BODY_SOURCE_FILES[candidate]
         if path.is_file():
-            return path, candidate
+            stage = candidate
+            if candidate == "final":
+                resolved_name = path.resolve().name
+                stage = next(
+                    (
+                        name
+                        for name, filename in BODY_SOURCE_FILES.items()
+                        if name != "final" and filename == resolved_name
+                    ),
+                    "final",
+                )
+            return path, stage
     expected = ", ".join(BODY_SOURCE_FILES[item] for item in candidates)
     raise ProductExportError(f"no selected body source in {clip_dir}; expected {expected}")
 
@@ -313,6 +341,7 @@ def _export_human(
 
     quality = {
         "source_body_stage": source_stage,
+        "source_body_path": body_path.name,
         "frames": frames,
         "fps": fps,
         "left_hand_valid_ratio": float(np.mean(output["left_hand_valid"])),
@@ -406,6 +435,8 @@ def _export_robot(
     hand_model: str,
     expected_frames: int,
     expected_fps: float,
+    human_path: Path,
+    human_stage: str,
 ) -> dict[str, Any]:
     pkl_path = clip_dir / "robot_motion.pkl"
     if not pkl_path.is_file():
@@ -419,6 +450,12 @@ def _export_robot(
         raise ProductExportError(f"cannot load trusted robot motion {pkl_path}: {exc}") from exc
     if not isinstance(motion, dict):
         raise ProductExportError(f"robot motion is not a dictionary: {pkl_path}")
+    source_provenance = build_source_provenance(
+        clip_dir,
+        human_path,
+        human_stage,
+        motion,
+    )
     for key in ("root_pos", "root_rot", "dof_pos"):
         if key not in motion:
             raise ProductExportError(f"robot_motion.pkl is missing {key}")
@@ -481,7 +518,7 @@ def _export_robot(
 
     hands_path = clip_dir / "001_sharpa_chain_hands.npz"
     hand_exported = False
-    if hand_model == "sharpa":
+    if hand_model in {"sharpa", "sharpa_g1", "sharpa_h1"}:
         hands = _load_npz(hands_path)
         _require_keys(
             hands,
@@ -522,6 +559,7 @@ def _export_robot(
         "embodiment": embodiment,
         "dof_count": int(dof_pos.shape[1]),
         "separate_robot_hand_motion": hand_exported,
+        "source_provenance": source_provenance,
     }
 
 
@@ -865,35 +903,6 @@ def _export_object(
     }
 
 
-def _rights_manifest(config: dict[str, Any]) -> dict[str, Any]:
-    rights = copy.deepcopy(config.get("product", {}).get("rights", {}))
-    resolved = {
-        "source_video_commercial_rights": bool(
-            rights.get("source_video_commercial_rights", False)
-        ),
-        "subject_release": bool(rights.get("subject_release", False)),
-        "gvhmr_commercial_license": bool(
-            rights.get("gvhmr_commercial_license", False)
-        ),
-        "third_party_assets_reviewed": bool(
-            rights.get("third_party_assets_reviewed", False)
-        ),
-    }
-    resolved["commercial_ready"] = all(resolved.values())
-    resolved["notice"] = (
-        "技术导出成功不等于已获商业销售授权；必须核验输入视频、人物授权、"
-        "GVHMR 商业许可、模型权重与机器人/物体资产许可。"
-    )
-    resolved["known_restrictions"] = [
-        "The bundled GVHMR source license permits educational, research and "
-        "non-profit use only unless a separate commercial license is obtained.",
-        "The default automatic detector uses Ultralytics YOLO. Review AGPL-3.0 "
-        "obligations or obtain an appropriate commercial license for the deployment.",
-        "Do not redistribute model checkpoints or source video unless separately cleared.",
-    ]
-    return resolved
-
-
 def _config_snapshot(config: dict[str, Any]) -> dict[str, Any]:
     keep = (
         "schema_version",
@@ -928,6 +937,7 @@ def _config_snapshot(config: dict[str, Any]) -> dict[str, Any]:
 def _copy_preview(clip_dir: Path, bundle_dir: Path) -> str | None:
     candidates = (
         clip_dir / "composite_2x2.mp4",
+        clip_dir / "unitree_g1_sharpa_gvhmr.mp4",
         clip_dir / "unitree_h1_with_hand_sharpa_gvhmr.mp4",
     )
     for source in candidates:
@@ -945,6 +955,47 @@ def _payload_files(bundle_dir: Path) -> list[Path]:
         if path.is_file()
         and path.name not in {"manifest.json", "checksums.sha256"}
     )
+
+
+def _compact_motion_npz(bundle_dir: Path) -> list[str]:
+    """Merge final motion components into one portable NPZ asset.
+
+    The execution workspace can contain stage caches while a clip is running,
+    but an exported dataset item has one numerical motion payload. Prefixing
+    every field by its component makes the contract explicit and avoids
+    duplicate generic names such as ``fps`` or ``translation``.
+    """
+    components = (
+        ("human", "human_motion.npz"),
+        ("human_phc", "human_phc_motion.npz"),
+        ("robot", "robot_motion.npz"),
+        ("sharpa", "robot_hand_motion.npz"),
+        ("camera", "camera.npz"),
+        ("object", "object_motion.npz"),
+    )
+    packed: dict[str, Any] = {
+        "schema_version": np.int32(SCHEMA_VERSION),
+        "format": np.asarray("locomanipulation_motion_v1"),
+    }
+    present: list[str] = []
+    consumed: list[Path] = []
+    for namespace, filename in components:
+        path = bundle_dir / filename
+        if not path.is_file():
+            continue
+        values = _load_npz(path)
+        for key, value in values.items():
+            packed[f"{namespace}__{key}"] = value
+        present.append(namespace)
+        consumed.append(path)
+    if not present:
+        raise ProductExportError("no motion NPZ components were produced")
+    packed["components"] = np.asarray(present)
+    destination = bundle_dir / "motion.npz"
+    _save_npz(destination, packed)
+    for path in consumed:
+        path.unlink()
+    return present
 
 
 def verify_bundle(bundle_dir: Path) -> dict[str, Any]:
@@ -992,61 +1043,165 @@ def verify_bundle(bundle_dir: Path) -> dict[str, Any]:
     return {"checked_files": len(checked_paths), "status": "passed"}
 
 
+def _resolve_export_roots(
+    project_root: Path,
+    config: dict[str, Any],
+) -> tuple[Path, Path, Path]:
+    project_root = project_root.resolve()
+    output_value = Path(config["output"]["root"])
+    output_root = (
+        output_value.resolve()
+        if output_value.is_absolute()
+        else (project_root / output_value).resolve()
+    )
+    product_value = Path(
+        config.get("product", {}).get("root", "assets/pipeline_products")
+    )
+    product_root = (
+        product_value.resolve()
+        if product_value.is_absolute()
+        else (project_root / product_value).resolve()
+    )
+    return project_root, output_root, product_root
+
+
+def _resolve_export_clip_paths(
+    output_root: Path,
+    product_root: Path,
+    clip: str,
+) -> tuple[Path, Path]:
+    clip_dir = (output_root / clip).resolve()
+    if clip_dir.parent != output_root or not clip_dir.is_dir():
+        raise ProductExportError(
+            f"clip={clip!r}: work directory is missing or unsafe: {clip_dir}"
+        )
+    final_dir = (product_root / clip).resolve()
+    if final_dir.parent != product_root:
+        raise ProductExportError(f"unsafe product clip name: {clip!r}")
+    if _is_relative_to(final_dir, clip_dir):
+        raise ProductExportError(
+            "product.root must not be inside the clip work directory"
+        )
+    return clip_dir, final_dir
+
+
+def _load_automated_quality_for_export(
+    clip_dir: Path,
+    config: dict[str, Any],
+    clip: str,
+) -> dict[str, Any] | None:
+    product_cfg = config.get("product", {})
+    quality_config = config.get("quality_evaluation", {})
+    minimum = str(product_cfg.get("minimum_quality_status", "warn"))
+    if minimum not in {"warn", "pass"}:
+        raise ProductExportError(
+            "product.minimum_quality_status must be warn or pass"
+        )
+    try:
+        minimum_schema = int(
+            product_cfg.get("minimum_quality_schema_version", 1)
+        )
+    except (TypeError, ValueError) as exc:
+        raise ProductExportError(
+            "product.minimum_quality_schema_version must be an integer"
+        ) from exc
+    if minimum_schema < 1:
+        raise ProductExportError(
+            "product.minimum_quality_schema_version must be at least 1"
+        )
+    quality_path = clip_dir / "quality_report.json"
+    if not quality_path.is_file():
+        if bool(quality_config.get("require_for_product", False)):
+            raise ProductExportError(
+                f"clip={clip!r}: quality_report.json is required for product export"
+            )
+        return None
+
+    automated_quality = _json_read(quality_path)
+    try:
+        report_schema = int(automated_quality.get("schema_version", 0))
+    except (TypeError, ValueError):
+        report_schema = 0
+    if report_schema < minimum_schema:
+        raise ProductExportError(
+            f"clip={clip!r}: quality report schema_version={report_schema} is "
+            f"below product.minimum_quality_schema_version={minimum_schema}; "
+            "rerun the quality stage before product export"
+        )
+    report_clip = automated_quality.get("clip")
+    if report_clip is not None and str(report_clip) != clip:
+        raise ProductExportError(
+            f"clip={clip!r}: quality report belongs to {report_clip!r}"
+        )
+    quality_status = str(automated_quality.get("status", "fail"))
+    ranks = {"fail": 0, "warn": 1, "pass": 2}
+    if quality_status not in ranks:
+        raise ProductExportError(
+            f"clip={clip!r}: invalid quality status {quality_status!r}"
+        )
+    if ranks[quality_status] < ranks[minimum]:
+        raise ProductExportError(
+            f"clip={clip!r}: quality status {quality_status!r} is below "
+            f"product.minimum_quality_status={minimum!r}"
+        )
+    return automated_quality
+
+
+def _preflight_export_quality(
+    project_root: Path,
+    config: dict[str, Any],
+    clips: Iterable[str],
+) -> None:
+    _, output_root, product_root = _resolve_export_roots(project_root, config)
+    failures = []
+    for clip in clips:
+        try:
+            clip_dir, _ = _resolve_export_clip_paths(
+                output_root, product_root, clip
+            )
+            _load_automated_quality_for_export(clip_dir, config, clip)
+        except Exception as exc:
+            failures.append(str(exc))
+    if failures:
+        details = "\n  ".join(failures)
+        raise ProductExportError(
+            "product quality preflight failed; no new bundles were exported; "
+            f"output_root={output_root}; product_root={product_root}\n  {details}"
+        )
+
+
 def export_clip(
     project_root: Path,
     config: dict[str, Any],
     clip: str,
 ) -> dict[str, Any]:
-    project_root = project_root.resolve()
-    output_root = (project_root / config["output"]["root"]).resolve()
-    if Path(config["output"]["root"]).is_absolute():
-        output_root = Path(config["output"]["root"]).resolve()
-    product_cfg = config.get("product", {})
-    product_root_value = product_cfg.get("root", "assets/pipeline_products")
-    product_root = (
-        Path(product_root_value).resolve()
-        if Path(product_root_value).is_absolute()
-        else (project_root / product_root_value).resolve()
+    project_root, output_root, product_root = _resolve_export_roots(
+        project_root, config
     )
-    clip_dir = (output_root / clip).resolve()
-    if clip_dir.parent != output_root or not clip_dir.is_dir():
-        raise ProductExportError(f"clip work directory is missing or unsafe: {clip_dir}")
-    final_dir = (product_root / clip).resolve()
-    if final_dir.parent != product_root:
-        raise ProductExportError(f"unsafe product clip name: {clip!r}")
-    if _is_relative_to(final_dir, clip_dir):
-        raise ProductExportError("product.root must not be inside the clip work directory")
+    product_cfg = config.get("product", {})
+    clip_dir, final_dir = _resolve_export_clip_paths(
+        output_root, product_root, clip
+    )
+    automated_quality = _load_automated_quality_for_export(
+        clip_dir, config, clip
+    )
     product_root.mkdir(parents=True, exist_ok=True)
     stage_dir = Path(
         tempfile.mkdtemp(prefix=f".{clip}.export-", dir=product_root)
     ).resolve()
     try:
-        automated_quality = None
-        quality_config = config.get("quality_evaluation", {})
-        quality_path = clip_dir / "quality_report.json"
-        if quality_path.is_file():
-            automated_quality = _json_read(quality_path)
-            quality_status = str(automated_quality.get("status", "fail"))
-            minimum = str(
-                product_cfg.get("minimum_quality_status", "warn")
-            )
-            ranks = {"fail": 0, "warn": 1, "pass": 2}
-            if minimum not in {"warn", "pass"}:
-                raise ProductExportError(
-                    "product.minimum_quality_status must be warn or pass"
-                )
-            if ranks.get(quality_status, 0) < ranks[minimum]:
-                raise ProductExportError(
-                    f"clip quality status {quality_status!r} is below "
-                    f"product.minimum_quality_status={minimum!r}"
-                )
+        if automated_quality is not None:
             _json_write(
                 stage_dir / "quality_report.json",
                 _portable_value(automated_quality),
             )
-        elif bool(quality_config.get("require_for_product", False)):
-            raise ProductExportError(
-                f"quality_report.json is required for product export: {clip}"
+        final_selection = None
+        selection_path = clip_dir / "final_motion_selection.json"
+        if selection_path.is_file():
+            final_selection = _json_read(selection_path)
+            _json_write(
+                stage_dir / "final_motion_selection.json",
+                _portable_value(final_selection),
             )
 
         human_quality, frames, fps = _export_human(
@@ -1059,12 +1214,25 @@ def export_clip(
             bool(product_cfg.get("include_phc_motion", True))
             and bool(config.get("phc", {}).get("enabled", False))
         ):
-            phc_quality = _export_phc_motion(
-                clip_dir,
-                stage_dir,
-                frames,
-                fps,
-            )
+            # When the canonical human component already is the PHC output,
+            # writing it again under a second filename wastes space at scale.
+            # Keep the provenance record but export a second body component
+            # only when the selected human and PHC stages are genuinely
+            # different.
+            if str(human_quality["source_body_stage"]).startswith("phc"):
+                phc_quality = {
+                    "frames": frames,
+                    "fps": fps,
+                    "source": str(human_quality["source_body_path"]),
+                    "stored_in_canonical_human_component": True,
+                }
+            else:
+                phc_quality = _export_phc_motion(
+                    clip_dir,
+                    stage_dir,
+                    frames,
+                    fps,
+                )
         robot_quality = _export_robot(
             project_root,
             clip_dir,
@@ -1072,7 +1240,18 @@ def export_clip(
             str(config.get("gmr", {}).get("hand_model", "sharpa")),
             frames,
             fps,
+            clip_dir / str(human_quality["source_body_path"]),
+            str(human_quality["source_body_stage"]),
         )
+        source_provenance = robot_quality["source_provenance"]
+        provenance_comparison = source_provenance["comparison"]
+        if provenance_comparison["status"] != "match":
+            print(
+                "[PRODUCT][PROVENANCE] "
+                f"{clip}: {provenance_comparison['status']} "
+                f"({provenance_comparison['reason']})",
+                flush=True,
+            )
         camera_quality = None
         if bool(product_cfg.get("include_camera", True)):
             camera_quality = _export_camera(
@@ -1129,15 +1308,9 @@ def export_clip(
             yaml.safe_dump(snapshot, allow_unicode=True, sort_keys=False),
             encoding="utf-8",
         )
-        rights = _rights_manifest(config)
-        _json_write(stage_dir / "rights.json", rights)
-        if bool(product_cfg.get("require_commercial_clearance", False)) and not rights[
-            "commercial_ready"
-        ]:
-            raise ProductExportError(
-                "product.require_commercial_clearance is true, but rights are not cleared"
-            )
 
+        has_object = (stage_dir / "object_motion.npz").is_file()
+        motion_components = _compact_motion_npz(stage_dir)
         payload = _payload_files(stage_dir)
         file_records = {
             str(path.relative_to(stage_dir)): {
@@ -1146,7 +1319,6 @@ def export_clip(
             }
             for path in payload
         }
-        has_object = (stage_dir / "object_motion.npz").is_file()
         manifest = {
             "schema_version": SCHEMA_VERSION,
             "clip": clip,
@@ -1155,28 +1327,15 @@ def export_clip(
             "fps": fps,
             "files": file_records,
             "data_contract": {
-                "human": {
-                    "file": "human_motion.npz",
-                    "coordinate_system": "gvhmr_world_gravity_negative_y",
-                    "rotation": "axis_angle_radians",
-                },
-                "human_phc": (
-                    {
-                        "file": "human_phc_motion.npz",
-                        "coordinate_system": "gvhmr_world_gravity_negative_y",
-                        "rotation": "axis_angle_radians",
-                    }
-                    if phc_quality is not None
-                    else None
-                ),
-                "robot": {
-                    "file": "robot_motion.npz",
-                    "coordinate_system": "mujoco_world_z_up",
-                    "root_quaternion": "xyzw",
+                "motion": {
+                    "file": "motion.npz",
+                    "components": motion_components,
+                    "field_namespace_separator": "__",
+                    "final_selection": final_selection,
                 },
                 "object": (
                     {
-                        "file": "object_motion.npz",
+                        "motion_namespace": "object",
                         "camera_pose": "T_camera_object; OpenCV x-right y-down z-forward",
                         "robot_quaternion": "wxyz; MuJoCo z-up world",
                     }
@@ -1188,9 +1347,15 @@ def export_clip(
                 "automated": (
                     {
                         "status": automated_quality.get("status"),
-                        "overall_score": automated_quality.get(
-                            "overall_score"
-                        ),
+                        "score": automated_quality.get(
+                            "macro_quality", {}
+                        ).get("score", automated_quality.get("overall_score")),
+                        "grade": automated_quality.get(
+                            "macro_quality", {}
+                        ).get("grade"),
+                        "verdict": automated_quality.get(
+                            "macro_quality", {}
+                        ).get("verdict"),
                         "report": "quality_report.json",
                     }
                     if automated_quality is not None
@@ -1202,11 +1367,8 @@ def export_clip(
                 "camera": camera_quality,
                 "object": object_quality,
             },
+            "provenance": source_provenance,
             "preview": preview,
-            "rights": {
-                "commercial_ready": rights["commercial_ready"],
-                "details": "rights.json",
-            },
             "validation": {"status": "passed"},
         }
         _json_write(stage_dir / "manifest.json", manifest)
@@ -1233,13 +1395,15 @@ def export_clip(
             "clip": clip,
             "bundle": str(final_dir),
             "product_grade": manifest["product_grade"],
-            "commercial_ready": rights["commercial_ready"],
             "bytes": sum(path.stat().st_size for path in final_dir.rglob("*") if path.is_file()),
         }
         return result
-    except Exception:
+    except Exception as exc:
         shutil.rmtree(stage_dir, ignore_errors=True)
-        raise
+        raise ProductExportError(
+            f"clip={clip!r}; output_root={output_root}; "
+            f"product_root={product_root}: {exc}"
+        ) from exc
 
 
 def _safe_remove_direct_child(path: Path, parent: Path, label: str) -> None:
@@ -1337,14 +1501,10 @@ def _write_product_catalog(
                     "object"
                 )
                 is not None,
-                "commercial_ready": bool(
-                    manifest.get("rights", {}).get(
-                        "commercial_ready",
-                        False,
-                    )
-                ),
                 "quality_status": automated_quality.get("status"),
-                "overall_score": automated_quality.get("overall_score"),
+                "pipeline_score": automated_quality.get("score"),
+                "pipeline_grade": automated_quality.get("grade"),
+                "pipeline_verdict": automated_quality.get("verdict"),
                 "bytes": sum(
                     path.stat().st_size
                     for path in bundle_dir.rglob("*")
@@ -1386,30 +1546,64 @@ def export_from_config(
     product_cfg = config.get("product", {})
     if not bool(product_cfg.get("enabled", False)):
         raise ProductExportError("product.enabled is false")
+    clip_list = list(clips)
+    if not clip_list:
+        raise ProductExportError("no clips were requested for product export")
+    if len(set(clip_list)) != len(clip_list):
+        raise ProductExportError("duplicate clips were requested for product export")
     results = []
+    completed = []
     retention = product_cfg.get("retention", {})
     prune = bool(retention.get("prune_workspace_after_export", False))
-    try:
-        for clip in clips:
-            if dry_run:
-                print(f"[DRY-RUN] export product: {clip}", flush=True)
-                if prune:
-                    print(
-                        f"[DRY-RUN] prune verified workspace: {clip}",
-                        flush=True,
-                    )
-                continue
+    if not dry_run:
+        _preflight_export_quality(project_root, config, clip_list)
+    for clip in clip_list:
+        if dry_run:
+            print(f"[DRY-RUN] export product: {clip}", flush=True)
+            if prune:
+                print(
+                    f"[DRY-RUN] prune verified workspace: {clip}",
+                    flush=True,
+                )
+            continue
+        try:
             result = export_clip(project_root, config, clip)
             print(
                 f"[PRODUCT] {clip}: {result['product_grade']} -> {result['bundle']}",
                 flush=True,
             )
-            if not result["commercial_ready"]:
-                print(
-                    "[PRODUCT][RIGHTS] commercial_ready=false; see rights.json",
-                    flush=True,
-                )
-            if prune:
+            results.append(result)
+            completed.append(clip)
+        except Exception as exc:
+            _, output_root, product_root = _resolve_export_roots(
+                project_root, config
+            )
+            raise ProductExportError(
+                "product export failed; no catalog was published; "
+                f"phase=export; clip={clip!r}; output_root={output_root}; "
+                f"product_root={product_root}; completed_clips={completed!r}; "
+                "already-promoted bundles are verified but were not rolled back: "
+                f"{exc}"
+            ) from exc
+
+    if dry_run:
+        return results
+
+    try:
+        catalog = _write_product_catalog(project_root, config)
+    except Exception as exc:
+        _, output_root, product_root = _resolve_export_roots(project_root, config)
+        raise ProductExportError(
+            "all requested bundles were committed but catalog publication failed; "
+            f"output_root={output_root}; product_root={product_root}; "
+            f"completed_clips={completed!r}: {exc}"
+        ) from exc
+    print(f"[PRODUCT] catalog -> {catalog}", flush=True)
+
+    if prune:
+        for result in results:
+            clip = str(result["clip"])
+            try:
                 prune_result = prune_exported_workspace(
                     project_root,
                     config,
@@ -1421,11 +1615,11 @@ def export_from_config(
                     "work directorie(s) after checksum verification",
                     flush=True,
                 )
-            results.append(result)
-    finally:
-        if not dry_run:
-            catalog = _write_product_catalog(project_root, config)
-            print(f"[PRODUCT] catalog -> {catalog}", flush=True)
+            except Exception as exc:
+                raise ProductExportError(
+                    "product bundles and catalog were published, but workspace "
+                    f"pruning failed; phase=prune; clip={clip!r}: {exc}"
+                ) from exc
     return results
 
 

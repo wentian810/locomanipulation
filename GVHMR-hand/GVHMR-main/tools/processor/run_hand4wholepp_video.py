@@ -118,6 +118,7 @@ def check_hand4wholepp_assets(root: Path, snapshot: Path) -> None:
             "DWPose mmpose config",
         ),
         (root / "common" / "nets" / "WiLoR" / "pretrained_models" / "wilor_final.ckpt", "WiLoR checkpoint"),
+        (root / "common" / "nets" / "WiLoR" / "pretrained_models" / "detector.pt", "WiLoR detector checkpoint"),
         (root / "common" / "nets" / "WiLoR" / "pretrained_models" / "model_config.yaml", "WiLoR config"),
         (root / "common" / "nets" / "WiLoR" / "mano_data" / "MANO_RIGHT.pkl", "WiLoR MANO_RIGHT.pkl"),
         (root / "common" / "utils" / "human_model_files" / "smpl" / "SMPL_NEUTRAL.pkl", "SMPL neutral model"),
@@ -424,13 +425,88 @@ def main() -> None:
             mmap=True,
         )
         incompatible = model.load_state_dict(ckpt["network"], strict=False)
-        if incompatible.missing_keys or incompatible.unexpected_keys:
-            print(
-                "[Hand4Whole++] checkpoint compatibility: "
-                f"missing={len(incompatible.missing_keys)}, "
-                f"unexpected={len(incompatible.unexpected_keys)}",
-                flush=True,
-            )
+        external_prefixes = (
+            "module.wilor_det.",
+            "module.wilor.",
+            "module.dwpose.",
+        )
+        # SMPL-X geometry is constructed from the checked local model assets,
+        # rather than stored in snapshot_6.pth.  These are static layer
+        # buffers (vertices, regressors, blend-shapes), not missing learned
+        # Hand4Whole++ weights.
+        runtime_asset_prefixes = ("module.smplx_layer.",)
+        external_missing = [
+            key
+            for key in incompatible.missing_keys
+            if key.startswith(external_prefixes)
+        ]
+        non_external_missing = [
+            key
+            for key in incompatible.missing_keys
+            if not key.startswith(external_prefixes)
+        ]
+        runtime_asset_missing = [
+            key
+            for key in non_external_missing
+            if key.startswith(runtime_asset_prefixes)
+        ]
+        core_missing = [
+            key
+            for key in non_external_missing
+            if not key.startswith(runtime_asset_prefixes)
+        ]
+        if incompatible.unexpected_keys or core_missing:
+            verdict = "incompatible_core"
+        elif external_missing or runtime_asset_missing:
+            verdict = "compatible_runtime_assets"
+        else:
+            verdict = "compatible_clean"
+        external_assets = {}
+        for name, path in {
+            "wilor": root / "common" / "nets" / "WiLoR" / "pretrained_models" / "wilor_final.ckpt",
+            "detector": root / "common" / "nets" / "WiLoR" / "pretrained_models" / "detector.pt",
+            "dwpose": root / "common" / "nets" / "mmpose" / "dw-ll_ucoco.pth",
+            "smplx_neutral": root / "common" / "utils" / "human_model_files" / "smplx" / "SMPLX_NEUTRAL.pkl",
+        }.items():
+            external_assets[name] = {
+                "path": str(path),
+                "exists": path.is_file(),
+                "bytes": path.stat().st_size if path.is_file() else None,
+            }
+        prov = {
+            "schema_version": 3,
+            "checkpoint": str(snapshot),
+            "checkpoint_bytes": snapshot.stat().st_size,
+            "missing_key_count": len(incompatible.missing_keys),
+            "external_module_missing_key_count": len(external_missing),
+            "non_external_missing_key_count": len(non_external_missing),
+            "runtime_asset_missing_key_count": len(runtime_asset_missing),
+            "core_missing_key_count": len(core_missing),
+            "unexpected_key_count": len(incompatible.unexpected_keys),
+            "missing_keys_sample": incompatible.missing_keys[:20],
+            "non_external_missing_keys_sample": non_external_missing[:20],
+            "runtime_asset_missing_keys_sample": runtime_asset_missing[:20],
+            "core_missing_keys_sample": core_missing[:20],
+            "unexpected_keys_sample": incompatible.unexpected_keys[:20],
+            "external_assets": external_assets,
+            "active_bbox_source": "crop_override_or_dwpose",
+            "verdict": verdict,
+        }
+        prov_path = Path(args.output).expanduser().resolve().parent / "hand4wholepp_checkpoint_provenance.json"
+        prov_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(prov_path, "w", encoding="utf-8") as fp:
+            json.dump(prov, fp, indent=2)
+
+        print(
+            "[Hand4Whole++] checkpoint compatibility: "
+            f"verdict={verdict}, "
+            f"missing={len(incompatible.missing_keys)}, "
+            f"external_missing={len(external_missing)}, "
+            f"runtime_asset_missing={len(runtime_asset_missing)}, "
+            f"core_missing={len(core_missing)}, "
+            f"unexpected={len(incompatible.unexpected_keys)}",
+            flush=True,
+        )
         del ckpt
         gc.collect()
         for module in model.module.trainable_modules + model.module.eval_modules:
@@ -718,6 +794,11 @@ def main() -> None:
             "right_hand_global_orient": np.zeros((person_count, frame_count, 3, 3), dtype=np.float32),
             "left_hand_pose": np.zeros((person_count, frame_count, 15, 3, 3), dtype=np.float32),
             "right_hand_pose": np.zeros((person_count, frame_count, 15, 3, 3), dtype=np.float32),
+            # Preserve the WiLoR MANO shape prediction so a post-filter stage
+            # can re-run the same MANO forward pass and keep pose/joints
+            # kinematically consistent after temporal edits.
+            "left_hand_betas": np.zeros((person_count, frame_count, 10), dtype=np.float32),
+            "right_hand_betas": np.zeros((person_count, frame_count, 10), dtype=np.float32),
             "left_hand_joints_3d": np.zeros((person_count, frame_count, 21, 3), dtype=np.float32),
             "right_hand_joints_3d": np.zeros((person_count, frame_count, 21, 3), dtype=np.float32),
             "left_hand_valid": np.zeros((person_count, frame_count), dtype=bool),
@@ -810,6 +891,8 @@ def main() -> None:
                     right_pose = to_numpy_at(out, "smplx_rhand_pose", batch_idx, (45,))
                     left_global = to_numpy_at(out, "lhand_root_pose", batch_idx, (3,))
                     right_global = to_numpy_at(out, "rhand_root_pose", batch_idx, (3,))
+                    left_betas = to_numpy_at(out, "lhand_shape_param", batch_idx, (10,))
+                    right_betas = to_numpy_at(out, "rhand_shape_param", batch_idx, (10,))
                     # Convert axis-angle to rotation matrices (compatible with HaMeR format).
                     left_pose_mat = Rotation.from_rotvec(left_pose.reshape(-1, 3)).as_matrix().reshape(15, 3, 3).astype(np.float32)
                     right_pose_mat = Rotation.from_rotvec(right_pose.reshape(-1, 3)).as_matrix().reshape(15, 3, 3).astype(np.float32)
@@ -913,6 +996,8 @@ def main() -> None:
 
                     out_data["left_hand_pose"][person_idx, frame_idx] = left_pose_mat
                     out_data["right_hand_pose"][person_idx, frame_idx] = right_pose_mat
+                    out_data["left_hand_betas"][person_idx, frame_idx] = left_betas
+                    out_data["right_hand_betas"][person_idx, frame_idx] = right_betas
                     out_data["left_hand_global_orient"][person_idx, frame_idx] = left_global_mat
                     out_data["right_hand_global_orient"][person_idx, frame_idx] = right_global_mat
                     out_data["left_hand_joints_3d"][person_idx, frame_idx] = left_joints

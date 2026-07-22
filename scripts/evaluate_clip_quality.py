@@ -15,6 +15,7 @@ import json
 import math
 import os
 import pickle
+import sys
 import tempfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -22,18 +23,64 @@ from typing import Any, Iterable
 
 import numpy as np
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
 
-SCHEMA_VERSION = 1
+from source_provenance import build_source_provenance
+from hand_quality_metrics import (
+    hand_observation_metrics,
+    hand_orientation_continuity_metrics,
+    visible_hand_refinement_metrics,
+)
+
+
+SCHEMA_VERSION = 3
 BODY_SOURCE_FILES = {
     "converted": "001_converted.npz",
     "smoothed": "001_smoothed.npz",
     "phc_smoothed": "001_phc_smoothed.npz",
+    "phc_smoothed_grounded": "001_phc_smoothed_grounded.npz",
+    "final": "001_final.npz",
 }
 ROBOT_XML = {
-    "sharpa": "GMR-master/assets/unitree_h1/h1_with_hand.xml",
+    "sharpa": "GMR-master/assets/unitree_g1/g1_mocap_29dof.xml",
+    "sharpa_g1": "GMR-master/assets/unitree_g1/g1_mocap_29dof.xml",
+    "sharpa_h1": "GMR-master/assets/unitree_h1/h1_with_hand.xml",
     "g1": "GMR-master/assets/unitree_g1/g1_mocap_29dof_with_hands.xml",
     "brainco": "GMR-master/assets/unitree_g1/g1_mocap_29dof.xml",
 }
+
+# These labels are deliberately broad.  The detailed values that support each
+# stage remain in ``metrics``; this mapping is the compact view used when
+# comparing many clips in a run log or spreadsheet.
+MACRO_STAGE_LABELS = {
+    "files": "input/files",
+    "human": "body motion",
+    "hands": "hand motion",
+    "gmr": "G1 retargeting",
+    "visualization": "render consistency",
+    "object": "object motion",
+    "contact": "contact consistency",
+    "dynamics": "physics consistency",
+}
+
+
+def _quality_grade(score: float) -> str:
+    """Return a presentation grade for a 0--100 quality score.
+
+    A grade does not override a failing stage.  The accompanying verdict and
+    stage status always remain the authoritative safety signal.
+    """
+    if score >= 90.0:
+        return "A"
+    if score >= 80.0:
+        return "B"
+    if score >= 70.0:
+        return "C"
+    if score >= 60.0:
+        return "D"
+    return "E"
 
 
 class QualityEvaluationError(RuntimeError):
@@ -139,6 +186,16 @@ def _metric(
     return result
 
 
+def _summary_referenced_path(value: Any, base_dir: Path) -> Path | None:
+    """Resolve a provenance path without requiring that the file still exists."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    path = Path(os.path.expandvars(value)).expanduser()
+    if not path.is_absolute():
+        path = base_dir / path
+    return path.resolve()
+
+
 def _resolve_body_source(clip_dir: Path, source: str) -> tuple[Path, str]:
     candidates = (
         ("smoothed", "converted", "phc_smoothed")
@@ -147,8 +204,20 @@ def _resolve_body_source(clip_dir: Path, source: str) -> tuple[Path, str]:
     )
     for name in candidates:
         filename = BODY_SOURCE_FILES.get(name)
-        if filename and (clip_dir / filename).is_file():
-            return clip_dir / filename, name
+        path = clip_dir / filename if filename else None
+        if path is not None and path.is_file():
+            stage = name
+            if name == "final":
+                resolved_name = path.resolve().name
+                stage = next(
+                    (
+                        candidate
+                        for candidate, candidate_file in BODY_SOURCE_FILES.items()
+                        if candidate != "final" and candidate_file == resolved_name
+                    ),
+                    "final",
+                )
+            return path, stage
     expected = [BODY_SOURCE_FILES.get(name, name) for name in candidates]
     raise QualityEvaluationError(f"body source missing; expected one of {expected}")
 
@@ -583,7 +652,174 @@ class ClipEvaluator:
         self.robot: dict[str, Any] | None = None
         self.object_gmr: dict[str, np.ndarray] | None = None
         self.body_path: Path | None = None
+        self.provenance: dict[str, Any] = {}
+        self.hand_data_use_advisory: dict[str, Any] = {}
         self.object_expected = self._object_expected()
+
+    def _project_path(self, value: str | Path) -> Path:
+        path = Path(os.path.expandvars(str(value))).expanduser()
+        return path.resolve() if path.is_absolute() else (self.project_root / path).resolve()
+
+    def _input_video_path(self) -> Path | None:
+        input_config = self.config.get("input", {})
+        work_config = input_config.get("work_video", {})
+        if bool(work_config.get("enabled", True)):
+            work_root = self._project_path(
+                work_config.get("directory", "dataset_new6_work_1280")
+            )
+            work_video = work_root / f"{self.clip}.mp4"
+            if work_video.is_file():
+                return work_video
+
+        dataset_root = self._project_path(
+            input_config.get("dataset_dir", "dataset_new6")
+        )
+        extensions = input_config.get(
+            "extensions", [".mp4", ".avi", ".mov", ".mkv", ".m4v"]
+        )
+        for extension in extensions:
+            suffix = str(extension)
+            suffix = suffix if suffix.startswith(".") else f".{suffix}"
+            candidate = dataset_root / f"{self.clip}{suffix}"
+            if candidate.is_file():
+                return candidate
+        return None
+
+    def _evaluate_input_timing(self) -> tuple[str, float | None, list[str]]:
+        input_video = self._input_video_path()
+        if input_video is None:
+            self.metrics["input_motion_duration_relative_error"] = _metric(
+                None,
+                "skipped",
+                details={"reason": "configured input video was not found"},
+            )
+            self.metrics["work_video_fps_relative_error"] = _metric(
+                None,
+                "skipped",
+                details={"reason": "configured input video was not found"},
+            )
+            return "pass", None, []
+
+        metadata = _video_metadata(input_video)
+        if not metadata.get("readable", False):
+            self.metrics["input_motion_duration_relative_error"] = _metric(
+                None,
+                "fail",
+                details={"input_video": str(input_video), "video": metadata},
+            )
+            self.metrics["work_video_fps_relative_error"] = _metric(
+                None,
+                "fail",
+                details={"input_video": str(input_video), "video": metadata},
+            )
+            return "fail", None, ["input_video_unreadable"]
+
+        motion_frames = int(len(self.body["trans"]))
+        motion_fps = float(_scalar(self.body, "mocap_frame_rate", 0.0))
+        video_frames = int(metadata["frames"])
+        video_fps = float(metadata["fps"])
+        if motion_frames <= 0 or motion_fps <= 0 or video_frames <= 0 or video_fps <= 0:
+            relative_error = None
+            status = "fail"
+        else:
+            video_duration = video_frames / video_fps
+            motion_duration = motion_frames / motion_fps
+            relative_error = abs(motion_duration - video_duration) / max(
+                video_duration, 1e-9
+            )
+            warn = float(
+                self.threshold.get("input_duration_warn_relative", 0.01)
+            )
+            fail = float(
+                self.threshold.get("input_duration_fail_relative", 0.03)
+            )
+            duration_status = (
+                "fail"
+                if relative_error > fail
+                else "warn"
+                if relative_error > warn
+                else "pass"
+            )
+            status = duration_status
+        input_config = self.config.get("input", {})
+        work_config = input_config.get("work_video", {})
+        work_root = self._project_path(
+            work_config.get("directory", "dataset_new6_work_1280")
+        )
+        configured_fps = float(work_config.get("fps", 30))
+        is_work_video = (
+            bool(work_config.get("enabled", True))
+            and input_video.resolve() == (work_root / f"{self.clip}.mp4").resolve()
+        )
+        fps_relative_error = (
+            abs(video_fps - configured_fps) / max(configured_fps, 1e-9)
+            if is_work_video and configured_fps > 0
+            else None
+        )
+        if fps_relative_error is None:
+            fps_status = "skipped"
+        else:
+            fps_warn = float(
+                self.threshold.get("work_video_fps_warn_relative", 0.001)
+            )
+            fps_fail = float(
+                self.threshold.get("work_video_fps_fail_relative", 0.01)
+            )
+            fps_status = (
+                "fail"
+                if fps_relative_error > fps_fail
+                else "warn"
+                if fps_relative_error > fps_warn
+                else "pass"
+            )
+            status = max(
+                (status, fps_status),
+                key=lambda value: {"pass": 0, "warn": 1, "fail": 2}[value],
+            )
+        self.metrics["work_video_fps_relative_error"] = _metric(
+            fps_relative_error,
+            fps_status,
+            source=str(input_video),
+            details={
+                "configured_fps": configured_fps,
+                "actual_fps": video_fps,
+                "is_work_video": is_work_video,
+            },
+        )
+        self.metrics["input_motion_duration_relative_error"] = _metric(
+            relative_error,
+            status,
+            source=str(input_video),
+            details={
+                "input_video_frames": video_frames,
+                "input_video_fps": video_fps,
+                "input_video_duration_s": (
+                    video_frames / video_fps if video_fps > 0 else None
+                ),
+                "motion_frames": motion_frames,
+                "motion_fps": motion_fps,
+                "motion_duration_s": (
+                    motion_frames / motion_fps if motion_fps > 0 else None
+                ),
+            },
+        )
+        reasons = (
+            [f"input_motion_duration_relative_error={relative_error:.4f}"]
+            if relative_error is not None and status != "pass"
+            else ["input_motion_timing_invalid"]
+            if status == "fail"
+            else []
+        )
+        if fps_relative_error is not None and fps_status != "pass":
+            reasons.append(
+                f"work_video_fps_relative_error={fps_relative_error:.4f}"
+            )
+        combined_error = max(
+            value
+            for value in (relative_error, fps_relative_error)
+            if value is not None
+        ) if relative_error is not None or fps_relative_error is not None else None
+        return status, combined_error, reasons
 
     def _object_expected(self) -> bool:
         object_config = self.config.get("object", {})
@@ -633,7 +869,9 @@ class ClipEvaluator:
         ]
         if self.config.get("phc", {}).get("enabled", False):
             required.append(self.clip_dir / "001_phc_smoothed.npz")
-        if self.config.get("gmr", {}).get("hand_model", "sharpa") == "sharpa":
+        if self.config.get("gmr", {}).get("hand_model", "sharpa") in {
+            "sharpa", "sharpa_g1", "sharpa_h1"
+        }:
             required.append(self.clip_dir / "001_sharpa_chain_hands.npz")
         if self.config.get("gmr", {}).get("composite_2x2", True):
             required.append(self.clip_dir / "composite_2x2.mp4")
@@ -694,6 +932,63 @@ class ClipEvaluator:
             self.body = _load_npz(self.body_path)
             self.hands = _load_npz(self.clip_dir / "001_smplx_hands.npz")
             self.robot = _load_robot(self.clip_dir / "robot_motion.pkl")
+            self.provenance = build_source_provenance(
+                self.clip_dir,
+                self.body_path,
+                body_stage,
+                self.robot,
+            )
+            provenance_comparison = self.provenance["comparison"]
+            provenance_status = (
+                "pass"
+                if provenance_comparison["status"] == "match"
+                else "warn"
+            )
+            self.metrics["source_provenance"] = _metric(
+                provenance_comparison["status"],
+                provenance_status,
+                source="robot_motion.pkl[source_motion]",
+                details=self.provenance,
+            )
+            if provenance_status != "pass":
+                self._warn(
+                    "source_provenance_"
+                    f"{provenance_comparison['reason']}"
+                )
+            selection_path = self.clip_dir / "final_motion_selection.json"
+            if str(self.config.get("gmr", {}).get("source", "smoothed")) == "final":
+                if not selection_path.is_file():
+                    raise QualityEvaluationError(
+                        "final source selected but final_motion_selection.json is missing"
+                    )
+                selection = _read_json(selection_path)
+                selected_stage = str(selection.get("selected_stage", "unknown"))
+                selected_reason = str(selection.get("selection_reason", "unknown"))
+                selected_file = str(selection.get("selected_file", ""))
+                if selected_stage not in {
+                    "smoothed",
+                    "phc",
+                    "phc_smoothed",
+                    "phc_grounded",
+                    "phc_smoothed_grounded",
+                }:
+                    raise QualityEvaluationError(
+                        f"invalid final motion selected_stage={selected_stage!r}"
+                    )
+                expected_file = self.body_path.resolve().name
+                if selected_file != expected_file:
+                    raise QualityEvaluationError(
+                        "final motion selection does not match the resolved body source"
+                    )
+                fallback = selected_stage == "smoothed"
+                self.metrics["final_motion_selection"] = _metric(
+                    selected_stage,
+                    "warn" if fallback else "pass",
+                    source=selection_path.name,
+                    details=selection,
+                )
+                if fallback:
+                    self._warn(f"final_motion_phc_fallback={selected_reason}")
             self.frame_counts["human"] = int(len(self.body["trans"]))
             self.frame_counts["hands"] = int(len(self.hands["left_hand_valid"]))
             self.frame_counts["gmr"] = int(len(self.robot["root_pos"]))
@@ -729,12 +1024,14 @@ class ClipEvaluator:
                 if match_ratio < warn_ratio
                 else "pass"
             )
+            frame_count_status = status
             self.metrics["frame_count_match_ratio"] = _metric(
                 match_ratio,
                 status,
                 details={
                     "counts": self.frame_counts,
                     "body_source": body_stage,
+                    "provenance": self.provenance,
                 },
             )
             reasons = (
@@ -742,10 +1039,32 @@ class ClipEvaluator:
                 if status != "pass"
                 else []
             )
+            timing_status, timing_error, timing_reasons = (
+                self._evaluate_input_timing()
+            )
+            status_rank = {"pass": 0, "warn": 1, "fail": 2}
+            status = max(
+                (frame_count_status, timing_status),
+                key=lambda value: status_rank[value],
+            )
+            reasons.extend(timing_reasons)
+            timing_score = (
+                100.0
+                if timing_error is None
+                else _lower_is_better_score(
+                    timing_error,
+                    0.0,
+                    float(
+                        self.threshold.get(
+                            "input_duration_fail_relative", 0.03
+                        )
+                    ),
+                )
+            )
             self._set_stage(
                 "files",
                 status,
-                60.0 + 40.0 * match_ratio,
+                min(60.0 + 40.0 * match_ratio, timing_score),
                 reasons,
                 critical=status == "fail",
             )
@@ -852,16 +1171,46 @@ class ClipEvaluator:
         try:
             for side in ("left", "right"):
                 valid = _ratio(self.hands[f"{side}_hand_valid"])
+                reproj_values = self.hands[
+                    f"{side}_hand_reproj_error_relative"
+                ]
+                observation = hand_observation_metrics(self.hands, side)
+                orientation = hand_orientation_continuity_metrics(
+                    self.hands,
+                    side,
+                )
                 reproj = _finite_percentile(
-                    self.hands[f"{side}_hand_reproj_error_relative"],
+                    reproj_values,
                     90,
                 )
+                reproj_p50 = _finite_percentile(reproj_values, 50)
+                reproj_p95 = _finite_percentile(reproj_values, 95)
+                source_reliable = observation["source_reliable_ratio"]
+                observed_reproj = observation[
+                    "observed_reproj_error_relative_p90"
+                ]
                 spike = _ratio(self.hands[f"{side}_hand_spike_mask"])
                 repaired_key = f"{side}_hand_source_repaired"
                 repaired = (
                     _ratio(self.hands[repaired_key])
                     if repaired_key in self.hands
                     else 0.0
+                )
+                source_reliable_status = (
+                    "fail"
+                    if source_reliable < valid_fail
+                    else "warn"
+                    if source_reliable < valid_warn
+                    else "pass"
+                )
+                observed_reproj_status = (
+                    "skipped"
+                    if observed_reproj is None
+                    else "fail"
+                    if observed_reproj > reproj_fail
+                    else "warn"
+                    if observed_reproj > reproj_warn
+                    else "pass"
                 )
                 values = {
                     f"{side}_hand_valid_ratio": (
@@ -872,6 +1221,10 @@ class ClipEvaluator:
                         if valid < valid_warn
                         else "pass",
                     ),
+                    f"{side}_hand_source_reliable_ratio": (
+                        source_reliable,
+                        source_reliable_status,
+                    ),
                     f"{side}_hand_reproj_error_relative_p90": (
                         reproj,
                         "fail"
@@ -879,6 +1232,10 @@ class ClipEvaluator:
                         else "warn"
                         if reproj > reproj_warn
                         else "pass",
+                    ),
+                    f"{side}_hand_observed_reproj_error_relative_p90": (
+                        observed_reproj,
+                        observed_reproj_status,
                     ),
                     f"{side}_hand_spike_ratio": (
                         spike,
@@ -899,6 +1256,8 @@ class ClipEvaluator:
                 }
                 for key, (value, status) in values.items():
                     self.metrics[key] = _metric(value, status)
+                    if status == "skipped":
+                        continue
                     if status == "fail":
                         stage = "fail"
                     elif status == "warn" and stage == "pass":
@@ -906,9 +1265,81 @@ class ClipEvaluator:
                     if status != "pass":
                         text = "missing" if value is None else f"{value:.4f}"
                         reasons.append(f"{key}={text}")
+                for percentile, value in ((50, reproj_p50), (95, reproj_p95)):
+                    self.metrics[
+                        f"{side}_hand_reproj_error_relative_p{percentile}"
+                    ] = _metric(
+                        value,
+                        "info" if value is not None else "skipped",
+                        source="001_smplx_hands.npz",
+                        details={
+                            "interpretation": (
+                                "adapter-side reprojection proxy; not "
+                                "ground-truth hand accuracy"
+                            )
+                        },
+                    )
+                for percentile in (50, 95):
+                    value = observation[
+                        f"observed_reproj_error_relative_p{percentile}"
+                    ]
+                    self.metrics[
+                        f"{side}_hand_observed_reproj_error_relative_p{percentile}"
+                    ] = _metric(
+                        value,
+                        "info" if value is not None else "skipped",
+                        source="001_smplx_hands.npz",
+                        details={
+                            "frame_count": observation[
+                                "observed_reproj_frame_count"
+                            ],
+                            "interpretation": (
+                                "same adapter-side reprojection proxy, restricted "
+                                "to source-reliable frames; not ground-truth hand "
+                                "accuracy"
+                            ),
+                        },
+                    )
+                self.metrics[f"{side}_hand_source_reliable_ratio"] = _metric(
+                    source_reliable,
+                    source_reliable_status,
+                    source="001_smplx_hands.npz",
+                    details={
+                        "source_reliable_frames": observation[
+                            "source_reliable_frames"
+                        ],
+                        "frame_count": observation["frame_count"],
+                        "field_available": observation[
+                            "source_reliability_available"
+                        ],
+                        "interpretation": (
+                            "direct source-observation support; temporal fills are "
+                            "not counted as visual evidence"
+                        ),
+                    },
+                )
+                for name, value in orientation.items():
+                    metric_name = f"{side}_hand_{name}"
+                    self.metrics[metric_name] = _metric(
+                        value,
+                        "info" if value is not None else "skipped",
+                        unit="degrees" if name.startswith("wrist_angular") else None,
+                        source="001_smplx_hands.npz",
+                        details={
+                            "interpretation": (
+                                "temporal continuity diagnostic only; it cannot "
+                                "validate palm/front-back agreement with the image"
+                            )
+                        },
+                    )
                 scores.extend(
                     [
                         _higher_is_better_score(valid, valid_fail, 0.95),
+                        _higher_is_better_score(
+                            source_reliable,
+                            valid_fail,
+                            0.95,
+                        ),
                         _lower_is_better_score(
                             reproj,
                             reproj_warn * 0.6,
@@ -941,6 +1372,129 @@ class ClipEvaluator:
                 [f"hand_metric_error={exc}"],
                 critical=True,
             )
+
+    def evaluate_visible_hand_refinement(self) -> None:
+        """Expose an optional visible-hand A/B audit without affecting quality.
+
+        The direct-MANO provenance gate matters: an old refinement JSON may be
+        left in a clip after a later run selected a different MANO trajectory.
+        Only attach the audit when direct-MANO explicitly states that it used
+        the refinement output.  This method intentionally never calls
+        ``_set_stage``, ``_warn``, or ``_critical``.
+        """
+        metric_name = "visible_hand_refinement"
+        summary_candidates = [
+            self.clip_dir / "mano_params_visible_refined.json",
+            # Compatibility with manually run A/B experiments before the
+            # pipeline adopted the descriptive canonical filename above.
+            self.clip_dir / "visible_refine.json",
+        ]
+        direct_candidates = [
+            self.clip_dir / "mano_params_direct_mano_recomputed.json",
+            self.clip_dir / "mano_params_visible_refined_direct.json",
+        ]
+        summary_paths = [path for path in summary_candidates if path.is_file()]
+        direct_paths = [path for path in direct_candidates if path.is_file()]
+        if not summary_paths:
+            self.metrics[metric_name] = _metric(
+                None,
+                "skipped",
+                details={"reason": "visible_refine_summary_not_found"},
+            )
+            return
+        if not direct_paths:
+            self.metrics[metric_name] = _metric(
+                None,
+                "skipped",
+                details={
+                    "reason": "direct_mano_summary_not_found",
+                    "visible_refine_summaries": [str(path) for path in summary_paths],
+                },
+            )
+            return
+
+        attempts: list[dict[str, str]] = []
+        loaded_summaries: list[tuple[Path, dict[str, Any]]] = []
+        for path in summary_paths:
+            try:
+                loaded_summaries.append((path, _read_json(path)))
+            except QualityEvaluationError as exc:
+                attempts.append({"path": str(path), "error": str(exc)})
+        loaded_direct: list[tuple[Path, dict[str, Any]]] = []
+        for path in direct_paths:
+            try:
+                loaded_direct.append((path, _read_json(path)))
+            except QualityEvaluationError as exc:
+                attempts.append({"path": str(path), "error": str(exc)})
+
+        matched: tuple[Path, dict[str, Any], Path, dict[str, Any]] | None = None
+        for summary_path, summary in loaded_summaries:
+            output = _summary_referenced_path(summary.get("output"), self.clip_dir)
+            if output is None:
+                attempts.append(
+                    {
+                        "path": str(summary_path),
+                        "error": "visible_refine_output_missing",
+                    }
+                )
+                continue
+            for direct_path, direct in loaded_direct:
+                direct_input = _summary_referenced_path(
+                    direct.get("input"), self.clip_dir
+                )
+                if direct_input == output:
+                    matched = (summary_path, summary, direct_path, direct)
+                    break
+            if matched is not None:
+                break
+
+        if matched is None:
+            self.metrics[metric_name] = _metric(
+                None,
+                "skipped",
+                details={
+                    "reason": "direct_mano_input_does_not_match_visible_refine_output",
+                    "visible_refine_summaries": [str(path) for path in summary_paths],
+                    "direct_mano_summaries": [str(path) for path in direct_paths],
+                    "read_errors": attempts,
+                },
+            )
+            return
+
+        summary_path, summary, direct_path, direct = matched
+        try:
+            audit = visible_hand_refinement_metrics(
+                summary,
+                {"hands": int(self.frame_counts.get("hands", 0))},
+            )
+        except (TypeError, ValueError) as exc:
+            self.metrics[metric_name] = _metric(
+                None,
+                "skipped",
+                source=str(summary_path),
+                details={
+                    "reason": "visible_refine_summary_invalid",
+                    "error": str(exc),
+                    "direct_mano_summary": str(direct_path),
+                },
+            )
+            return
+
+        same_population = bool(audit["same_population_comparison_available"])
+        self.metrics[metric_name] = _metric(
+            same_population,
+            "info" if same_population else "skipped",
+            source=str(summary_path),
+            details={
+                "provenance": {
+                    "direct_mano_summary": str(direct_path),
+                    "direct_mano_input": direct.get("input"),
+                    "visible_refine_output": summary.get("output"),
+                    "input_matches_visible_refine_output": True,
+                },
+                "audit": audit,
+            },
+        )
 
     def evaluate_gmr(self) -> None:
         if self.robot is None:
@@ -1018,6 +1572,36 @@ class ClipEvaluator:
                     "finite": finite,
                 },
             )
+            if str(self.config.get("gmr", {}).get("hand_model", "sharpa")) in {
+                "sharpa", "sharpa_g1", "sharpa_h1"
+            }:
+                chain_path = self.clip_dir / "001_sharpa_chain_hands.npz"
+                chain = _load_npz(chain_path) if chain_path.is_file() else {}
+                for side in ("left", "right"):
+                    for statistic in ("mean", "p95"):
+                        raw_value = _scalar(
+                            chain, f"{side}_chain_error_{statistic}"
+                        )
+                        value_mm = (
+                            float(raw_value) * 1000.0
+                            if raw_value is not None
+                            and math.isfinite(float(raw_value))
+                            else None
+                        )
+                        self.metrics[
+                            f"{side}_hand_chain_error_{statistic}_mm"
+                        ] = _metric(
+                            value_mm,
+                            "info" if value_mm is not None else "skipped",
+                            unit="mm",
+                            source=chain_path.name,
+                            details={
+                                "interpretation": (
+                                    "Sharpa hand-chain IK target residual; "
+                                    "not visual hand ground truth"
+                                )
+                            },
+                        )
             joint_score = (
                 _lower_is_better_score(joint_ratio, 0.0, fail)
                 if joint_ratio is not None
@@ -1402,6 +1986,193 @@ class ClipEvaluator:
                 critical=required,
             )
 
+    def _build_hand_data_use_advisory(self) -> dict[str, Any]:
+        """Separate estimator evidence from robot retargeting diagnostics.
+
+        This is deliberately advisory-only.  It never deletes a clip or alters
+        product gating: its job is to prevent a smooth, interpolated hand track
+        from being described as a visually verified hand-motion sample.
+        """
+
+        policy = self.quality.get("hand_data_use_advisory", {})
+        retain_reliable = float(policy.get("retain_source_reliable_ratio", 0.85))
+        holdout_reliable = float(policy.get("holdout_source_reliable_ratio", 0.70))
+        review_repaired = float(policy.get("review_source_repaired_ratio", 0.20))
+        holdout_repaired = float(policy.get("holdout_source_repaired_ratio", 0.35))
+        review_reproj = float(policy.get("review_observed_reproj_p90_relative", 0.35))
+        holdout_reproj = float(policy.get("holdout_observed_reproj_p90_relative", 0.60))
+        chain_review = float(policy.get("review_chain_error_p95_mm", 10.0))
+
+        human_sides: dict[str, dict[str, Any]] = {}
+        human_status = "retain"
+        status_rank = {"retain": 0, "review": 1, "holdout": 2, "unknown": 3}
+        for side in ("left", "right"):
+            def value(name: str) -> Any:
+                return self.metrics.get(name, {}).get("value")
+
+            reliable = value(f"{side}_hand_source_reliable_ratio")
+            repaired = value(f"{side}_hand_repaired_ratio")
+            observed_reproj = value(
+                f"{side}_hand_observed_reproj_error_relative_p90"
+            )
+            reasons: list[str] = []
+            if any(item is None for item in (reliable, repaired, observed_reproj)):
+                side_status = "unknown"
+                reasons.append("insufficient_hand_observation_metrics")
+            elif (
+                reliable < holdout_reliable
+                or repaired > holdout_repaired
+                or observed_reproj > holdout_reproj
+            ):
+                side_status = "holdout"
+                if reliable < holdout_reliable:
+                    reasons.append(
+                        f"source_reliable_ratio={reliable:.4f}<{holdout_reliable:.4f}"
+                    )
+                if repaired > holdout_repaired:
+                    reasons.append(
+                        f"source_repaired_ratio={repaired:.4f}>{holdout_repaired:.4f}"
+                    )
+                if observed_reproj > holdout_reproj:
+                    reasons.append(
+                        f"observed_reproj_p90={observed_reproj:.4f}>{holdout_reproj:.4f}"
+                    )
+            elif (
+                reliable < retain_reliable
+                or repaired > review_repaired
+                or observed_reproj > review_reproj
+            ):
+                side_status = "review"
+                if reliable < retain_reliable:
+                    reasons.append(
+                        f"source_reliable_ratio={reliable:.4f}<{retain_reliable:.4f}"
+                    )
+                if repaired > review_repaired:
+                    reasons.append(
+                        f"source_repaired_ratio={repaired:.4f}>{review_repaired:.4f}"
+                    )
+                if observed_reproj > review_reproj:
+                    reasons.append(
+                        f"observed_reproj_p90={observed_reproj:.4f}>{review_reproj:.4f}"
+                    )
+            else:
+                side_status = "retain"
+
+            human_sides[side] = {
+                "status": side_status,
+                "source_reliable_ratio": reliable,
+                "source_repaired_ratio": repaired,
+                "observed_reproj_error_relative_p90": observed_reproj,
+                "reasons": reasons,
+            }
+            if status_rank[side_status] > status_rank[human_status]:
+                human_status = side_status
+
+        robot_sides: dict[str, dict[str, Any]] = {}
+        robot_status = "retain"
+        for side in ("left", "right"):
+            chain_p95 = self.metrics.get(
+                f"{side}_hand_chain_error_p95_mm", {}
+            ).get("value")
+            if chain_p95 is None:
+                side_status = "unknown"
+                reasons = ["chain_error_unavailable"]
+            elif chain_p95 > chain_review:
+                side_status = "review"
+                reasons = [
+                    f"chain_error_p95_mm={chain_p95:.3f}>{chain_review:.3f}"
+                ]
+            else:
+                side_status = "retain"
+                reasons = []
+            robot_sides[side] = {
+                "status": side_status,
+                "chain_error_p95_mm": chain_p95,
+                "reasons": reasons,
+            }
+            if status_rank[side_status] > status_rank[robot_status]:
+                robot_status = side_status
+
+        return {
+            "scope": (
+                "advisory_only; not a ground-truth benchmark, deletion rule, "
+                "or product-export gate"
+            ),
+            "human_hand_estimation": {
+                "status": human_status,
+                "sides": human_sides,
+            },
+            "robot_hand_retargeting": {
+                "status": robot_status,
+                "sides": robot_sides,
+            },
+        }
+
+    def _build_macro_quality(
+        self,
+        *,
+        mode: str,
+        weighted_stages: Iterable[str],
+        overall_score: float,
+        status: str,
+    ) -> dict[str, Any]:
+        """Build the one-screen quality view used for tracking experiments.
+
+        ``overall_score`` is the configured weighted result.  It is retained
+        for comparability, while the weakest stage and verdict prevent a high
+        weighted average from concealing a broken individual stage.
+        """
+        status_rank = {"pass": 0, "skipped": 0, "warn": 1, "fail": 2}
+        stages = []
+        for stage in weighted_stages:
+            score = float(self.stage_scores.get(stage, 0.0))
+            stage_status = str(self.stage_status.get(stage, "missing"))
+            stages.append(
+                {
+                    "key": stage,
+                    "label": MACRO_STAGE_LABELS.get(stage, stage),
+                    "score": round(float(np.clip(score, 0.0, 100.0)), 2),
+                    "grade": _quality_grade(score),
+                    "status": stage_status,
+                }
+            )
+
+        # A failed stage takes precedence over score.  Otherwise choose the
+        # lowest score, breaking ties in favour of the more severe status.
+        weakest = None
+        if stages:
+            weakest = min(
+                stages,
+                key=lambda value: (
+                    0 if value["status"] == "fail" else 1,
+                    float(value["score"]),
+                    -status_rank.get(str(value["status"]), 3),
+                    str(value["key"]),
+                ),
+            )
+
+        if status == "fail":
+            verdict = "reject"
+        elif status == "warn":
+            verdict = "review"
+        else:
+            verdict = "accept"
+        attention = list(dict.fromkeys([*self.critical, *self.warnings]))[:3]
+        return {
+            "score": round(float(np.clip(overall_score, 0.0, 100.0)), 2),
+            "grade": _quality_grade(overall_score),
+            "verdict": verdict,
+            "mode": mode,
+            "weakest_stage": weakest,
+            "stages": stages,
+            "attention": attention,
+            "interpretation": (
+                "accept=all evaluated stages passed; review=inspect the "
+                "listed stage before using; reject=at least one critical "
+                "stage failed. Detailed evidence is stored in metrics."
+            ),
+        }
+
     def finalize(self) -> dict[str, Any]:
         mode = "object" if self.object_expected else "human_only"
         weights = self.quality.get("weights", {}).get(mode, {})
@@ -1458,6 +2229,13 @@ class ClipEvaluator:
             if self.warnings or has_noncritical_failure
             else "pass"
         )
+        self.hand_data_use_advisory = self._build_hand_data_use_advisory()
+        macro_quality = self._build_macro_quality(
+            mode=mode,
+            weighted_stages=weights.keys(),
+            overall_score=overall,
+            status=status,
+        )
         return {
             "schema_version": SCHEMA_VERSION,
             "clip": self.clip,
@@ -1466,8 +2244,11 @@ class ClipEvaluator:
             "stage_status": self.stage_status,
             "stage_scores": self.stage_scores,
             "overall_score": round(overall, 2),
+            "macro_quality": macro_quality,
             "score_components": components,
             "metrics": self.metrics,
+            "hand_data_use_advisory": self.hand_data_use_advisory,
+            "provenance": self.provenance,
             "critical_fail_reasons": self.critical,
             "warn_reasons": self.warnings,
         }
@@ -1478,6 +2259,7 @@ class ClipEvaluator:
         self.evaluate_files()
         self.evaluate_human()
         self.evaluate_hands()
+        self.evaluate_visible_hand_refinement()
         self.evaluate_gmr()
         if not self.object_expected:
             self.evaluate_visualization()
@@ -1491,86 +2273,168 @@ def _summary_value(report: dict[str, Any], metric: str) -> Any:
     return report.get("metrics", {}).get(metric, {}).get("value")
 
 
+def _visible_refine_csv_values(report: dict[str, Any]) -> dict[str, Any]:
+    """Flatten only the comparable high-evidence audit fields for CSV."""
+    metric = report.get("metrics", {}).get("visible_hand_refinement", {})
+    details = metric.get("details", {}) if isinstance(metric, dict) else {}
+    audit = details.get("audit", {}) if isinstance(details, dict) else {}
+    sides = audit.get("sides", {}) if isinstance(audit, dict) else {}
+    values: dict[str, Any] = {}
+    for side in ("left", "right"):
+        prefix = f"{side}_visible_refine"
+        side_audit = sides.get(side, {}) if isinstance(sides, dict) else {}
+        if not isinstance(side_audit, dict):
+            side_audit = {}
+        values[f"{prefix}_comparison_status"] = side_audit.get(
+            "comparison_status"
+        )
+        values[f"{prefix}_fit_partition"] = side_audit.get("fit_partition")
+        values[f"{prefix}_holdout_comparison_status"] = side_audit.get(
+            "holdout_comparison_status"
+        )
+        for coverage_name, field_name in (
+            ("visible_evidence", "visible_evidence_ratio"),
+            ("refine_eligible", "eligible_ratio"),
+            ("holdout_fit_frames", "holdout_fit_ratio"),
+            ("applied", "applied_ratio"),
+        ):
+            coverage = side_audit.get(coverage_name, {})
+            values[f"{prefix}_{field_name}"] = (
+                coverage.get("ratio") if isinstance(coverage, dict) else None
+            )
+        values[f"{prefix}_applied_given_eligible_ratio"] = side_audit.get(
+            "applied_given_eligible_ratio"
+        )
+        for stat_name, field_name in (
+            (
+                "absolute_reprojection_before_applied_px",
+                "absolute_reproj_before_applied_p95_px",
+            ),
+            (
+                "absolute_reprojection_after_px",
+                "absolute_reproj_after_p95_px",
+            ),
+            (
+                "relative_reprojection_before_applied_px",
+                "relative_reproj_before_applied_p95_px",
+            ),
+            (
+                "relative_reprojection_after_px",
+                "relative_reproj_after_p95_px",
+            ),
+            (
+                "holdout_relative_reprojection_before_applied_px",
+                "holdout_relative_reproj_before_applied_p95_px",
+            ),
+            (
+                "holdout_relative_reprojection_after_px",
+                "holdout_relative_reproj_after_p95_px",
+            ),
+            ("accepted_delta_degrees", "delta_degrees_p95"),
+        ):
+            statistic = side_audit.get(stat_name, {})
+            values[f"{prefix}_{field_name}"] = (
+                statistic.get("p95") if isinstance(statistic, dict) else None
+            )
+    return values
+
+
 def _write_batch_summary(output_root: Path) -> None:
+    """Publish one compact run-level quality table.
+
+    Detailed values are intentionally kept only in each clip's
+    ``quality_report.json``.  The root-level output is for experiment tracking
+    and batch triage, not for reproducing every low-level diagnostic.
+    """
     reports = []
     for path in sorted(output_root.glob("*/quality_report.json")):
         try:
             reports.append(_read_json(path))
         except QualityEvaluationError:
             continue
-    jsonl_path = output_root / "quality_summary.jsonl"
-    csv_path = output_root / "quality_summary.csv"
-    handle, temporary_name = tempfile.mkstemp(
-        prefix=".quality-summary-",
-        suffix=".jsonl",
-        dir=output_root,
-        text=True,
+    rows = []
+    for report in reports:
+        macro = report.get("macro_quality", {})
+        if not isinstance(macro, dict):
+            macro = {}
+        stages = macro.get("stages", [])
+        if not isinstance(stages, list):
+            stages = []
+        stage_overview = "; ".join(
+            f"{stage.get('key', '')}={stage.get('grade', '')}"
+            f"/{stage.get('score', '')}({stage.get('status', '')})"
+            for stage in stages
+            if isinstance(stage, dict)
+        )
+        weakest = macro.get("weakest_stage", {})
+        if not isinstance(weakest, dict):
+            weakest = {}
+        attention = macro.get("attention", [])
+        rows.append(
+            {
+                "clip": report.get("clip"),
+                "mode": report.get("mode"),
+                "score": macro.get("score", report.get("overall_score")),
+                "grade": macro.get("grade", ""),
+                "verdict": macro.get("verdict", report.get("status", "")),
+                "status": report.get("status"),
+                "weakest_stage": weakest.get("key", ""),
+                "weakest_score": weakest.get("score", ""),
+                "stage_overview": stage_overview,
+                "attention": " | ".join(str(item) for item in attention),
+            }
+        )
+
+    # Remove the previous wide, duplicated batch summaries once the compact
+    # replacement has been written.  Per-clip quality_report.json remains the
+    # full diagnostic record.
+    _write_json(
+        output_root / "quality_overview.json",
+        {
+            "schema_version": 1,
+            "purpose": "compact per-clip pipeline quality overview",
+            "definition": (
+                "score is the configured weighted quality score; grade is a "
+                "presentation tier; verdict is accept/review/reject and never "
+                "overrides a failed stage."
+            ),
+            "clips": rows,
+            "aggregate": {
+                "clip_count": len(rows),
+                "mean_score": round(
+                    float(np.mean([row["score"] for row in rows]))
+                    if rows and all(isinstance(row["score"], (int, float)) for row in rows)
+                    else 0.0,
+                    2,
+                ),
+                "verdict_counts": {
+                    verdict: sum(1 for row in rows if row["verdict"] == verdict)
+                    for verdict in ("accept", "review", "reject")
+                },
+            },
+        },
     )
-    try:
-        with os.fdopen(handle, "w", encoding="utf-8") as stream:
-            for report in reports:
-                stream.write(json.dumps(report, ensure_ascii=False) + "\n")
-        os.replace(temporary_name, jsonl_path)
-    except Exception:
-        try:
-            os.unlink(temporary_name)
-        except FileNotFoundError:
-            pass
-        raise
     fields = [
         "clip",
         "mode",
+        "score",
+        "grade",
+        "verdict",
         "status",
-        "overall_score",
-        "files",
-        "human",
-        "hands",
-        "gmr",
-        "visualization",
-        "object",
-        "contact",
-        "dynamics",
-        "required_files_exist",
-        "frame_count_match_ratio",
-        "left_hand_valid_ratio",
-        "right_hand_valid_ratio",
-        "left_hand_reproj_error_relative_p90",
-        "right_hand_reproj_error_relative_p90",
-        "left_hand_spike_ratio",
-        "right_hand_spike_ratio",
-        "left_hand_repaired_ratio",
-        "right_hand_repaired_ratio",
-        "root_speed_p95",
-        "joint_limit_violation_ratio",
-        "object_valid_ratio",
-        "object_pose_jump_count",
-        "projection_bbox_iou_mean",
-        "contact_frame_ratio",
-        "dynamic_lift_success",
-        "critical_fail_reasons",
-        "warn_reasons",
+        "weakest_stage",
+        "weakest_score",
+        "stage_overview",
+        "attention",
     ]
-    with csv_path.open("w", encoding="utf-8", newline="") as stream:
+    with (output_root / "quality_overview.csv").open(
+        "w", encoding="utf-8", newline=""
+    ) as stream:
         writer = csv.DictWriter(stream, fieldnames=fields)
         writer.writeheader()
-        for report in reports:
-            stage = report.get("stage_status", {})
-            row = {
-                "clip": report.get("clip"),
-                "mode": report.get("mode"),
-                "status": report.get("status"),
-                "overall_score": report.get("overall_score"),
-                **{name: stage.get(name, "") for name in fields[4:12]},
-                **{
-                    name: _summary_value(report, name)
-                    for name in fields[12:29]
-                },
-                "critical_fail_reasons": " | ".join(
-                    report.get("critical_fail_reasons", [])
-                ),
-                "warn_reasons": " | ".join(report.get("warn_reasons", [])),
-            }
+        for row in rows:
             writer.writerow(row)
+    for legacy_name in ("quality_summary.jsonl", "quality_summary.csv"):
+        (output_root / legacy_name).unlink(missing_ok=True)
 
 
 def evaluate_clips(
@@ -1595,16 +2459,19 @@ def evaluate_clips(
         report = ClipEvaluator(project_root, config, clip).run()
         destination = output_root / clip / "quality_report.json"
         _write_json(destination, report)
+        macro = report.get("macro_quality", {})
         print(
             f"[QUALITY] {clip}: {report['status']} "
-            f"score={report['overall_score']:.2f} -> {destination}",
+            f"PQI={report['overall_score']:.2f} "
+            f"grade={macro.get('grade', '')} "
+            f"verdict={macro.get('verdict', '')} -> {destination}",
             flush=True,
         )
         reports.append(report)
     if not dry_run:
         _write_batch_summary(output_root)
         print(
-            f"[QUALITY] summaries -> {output_root / 'quality_summary.csv'}",
+            f"[QUALITY] compact overview -> {output_root / 'quality_overview.csv'}",
             flush=True,
         )
     return reports

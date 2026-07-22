@@ -29,13 +29,22 @@ export GMR_HAND_MODEL="${GMR_HAND_MODEL:-sharpa}"
 source "${PIPELINE_ROOT}/GMR-master/configure_hand_model.sh"
 
 # ---- Robot ----
-export GMR_ROBOT="${GMR_ROBOT:-unitree_h1_with_hand}"
+export GMR_ROBOT="${GMR_ROBOT:-unitree_g1}"
 export GMR_AUTO_HAND_NPZ=1
 export GMR_HAND_INVALID_MODE="${GMR_HAND_INVALID_MODE:-interp}"
 
 # ---- Hand backend ----
 export GVHMR_HAND_BACKEND="hand4wholepp"
+# Keep the direct wrapper aligned with configs/pipelines/human_sharpa.yaml.
+# A caller may still choose another named profile explicitly for an A/B run.
+export GVHMR_HAND_CONSTRAINT_PROFILE="${GVHMR_HAND_CONSTRAINT_PROFILE:-conservative}"
 source "${SCRIPT_DIR}/configure_hand_constraints.sh"
+
+# Mark the generic batch as configured only after the embodiment and
+# constraint profile have both been resolved.  Retire its incompatible inline
+# scorer; the config entrypoint owns the structured quality evaluator.
+export PIPELINE_WRAPPER_CONFIGURED=1
+export EVALUATE=0
 
 # ---- Output paths (single directory, GMR output inside GVHMR output) ----
 export OUTPUT_BASE="${OUTPUT_BASE:-${PIPELINE_ROOT}/output_dir/dataset_new6_hand4wholepp_directmano_gmr_${GMR_HAND_MODEL}_aligned}"
@@ -71,6 +80,12 @@ export GVHMR_HAND4WHOLEPP_YOLO_MODEL="${GVHMR_HAND4WHOLEPP_YOLO_MODEL:-yolo11n.p
 # The legacy fused_smplx joints can disagree with the WiLoR pose consumed by
 # GVHMR and were a source of GVHMR-versus-Sharpa visual mismatch.
 export GVHMR_HAND4WHOLEPP_JOINT_SOURCE="${GVHMR_HAND4WHOLEPP_JOINT_SOURCE:-direct_mano}"
+# Sequence-level crop tracking remains an explicit A/B switch.  It is wired
+# through run_pipeline.sh but must not silently change production results.
+export GVHMR_HAND4WHOLEPP_CROP_TRACKING="${GVHMR_HAND4WHOLEPP_CROP_TRACKING:-off}"
+export GVHMR_HAND4WHOLEPP_CROP_TRACKING_MAX_GAP="${GVHMR_HAND4WHOLEPP_CROP_TRACKING_MAX_GAP:-8}"
+export GVHMR_HAND4WHOLEPP_CROP_TRACKING_MAX_PREDICTION_GAP="${GVHMR_HAND4WHOLEPP_CROP_TRACKING_MAX_PREDICTION_GAP:-2}"
+export GVHMR_HAND4WHOLEPP_CROP_TRACKING_DIRECT_OBSERVATION_QUALITY="${GVHMR_HAND4WHOLEPP_CROP_TRACKING_DIRECT_OBSERVATION_QUALITY:-0.75}"
 
 # ---- ViTPose (shared across all backends) ----
 export GVHMR_VITPOSE_IMG_DS="${GVHMR_VITPOSE_IMG_DS:-1.0}"
@@ -85,8 +100,14 @@ export GVHMR_HAND_MIN_KEYPOINTS="${GVHMR_HAND_MIN_KEYPOINTS:-3}"
 export GVHMR_FILTER_MANO_WRIST="${GVHMR_FILTER_MANO_WRIST:-0}"
 export GVHMR_FILTER_MANO_TEMPORAL="${GVHMR_FILTER_MANO_TEMPORAL:-1}"
 export GVHMR_FILTER_MANO_FINGERS="${GVHMR_FILTER_MANO_FINGERS:-1}"
-# Disabled by default: enable only for a named A/B run until its diagnostics,
-# source-residual stratification and Sharpa chain fit have been reviewed.
+# Defaults retain the legacy filter behavior.  Set either to preserve only in
+# a named, isolated orientation A/B; local finger filtering remains enabled.
+export GVHMR_TEMPORAL_FILTER_GLOBAL_ORIENT_FILL_MODE="${GVHMR_TEMPORAL_FILTER_GLOBAL_ORIENT_FILL_MODE:-interpolate}"
+export GVHMR_FINGER_FILTER_WRIST_MODE="${GVHMR_FINGER_FILTER_WRIST_MODE:-smooth}"
+# ``hysup_fusion.py`` is a standalone, HySUP-inspired local-finger experiment;
+# it is not a second estimator and is intentionally not wired into this full
+# pipeline.  Keep the legacy environment names for compatibility, but fail
+# rather than silently producing a baseline run if somebody tries to enable it.
 export GVHMR_HYSUP_FUSION="${GVHMR_HYSUP_FUSION:-0}"
 export GVHMR_HYSUP_BODY_WRIST="${GVHMR_HYSUP_BODY_WRIST:-0}"
 export GVHMR_HYSUP_BODY_WRIST_QUALITY_THR="${GVHMR_HYSUP_BODY_WRIST_QUALITY_THR:-0.70}"
@@ -98,6 +119,10 @@ export GVHMR_HYSUP_ANCHOR_QUALITY="${GVHMR_HYSUP_ANCHOR_QUALITY:-0.85}"
 export GVHMR_HYSUP_ALPHA_FLOOR="${GVHMR_HYSUP_ALPHA_FLOOR:-0.10}"
 export GVHMR_HYSUP_MAX_INTERP_GAP="${GVHMR_HYSUP_MAX_INTERP_GAP:-12}"
 export GVHMR_HYSUP_MAX_EDGE_HOLD="${GVHMR_HYSUP_MAX_EDGE_HOLD:-6}"
+if [ "$GVHMR_HYSUP_FUSION" != "0" ]; then
+    echo "ERROR: GVHMR_HYSUP_FUSION is not integrated into the Hand4Whole++ pipeline. Use the standalone CPU A/B first; it does not repair wrist/palm orientation." >&2
+    exit 2
+fi
 export GVHMR_TEMPORAL_FILTER_MAX_INTERP_GAP="${GVHMR_TEMPORAL_FILTER_MAX_INTERP_GAP:-30}"
 export GVHMR_TEMPORAL_FILTER_MAX_EDGE_HOLD="${GVHMR_TEMPORAL_FILTER_MAX_EDGE_HOLD:-10}"
 export GVHMR_FINGER_FILTER_SMOOTH_WINDOW="${GVHMR_FINGER_FILTER_SMOOTH_WINDOW:-15}"
@@ -113,11 +138,10 @@ export GVHMR_FINGER_FILTER_MAX_WRIST_ANGLE_DELTA="${GVHMR_FINGER_FILTER_MAX_WRIS
 export GVHMR_FINGER_FILTER_HAND_SIZE_FLOOR_RATIO="${GVHMR_FINGER_FILTER_HAND_SIZE_FLOOR_RATIO:-0.94}"
 export GVHMR_FINGER_FILTER_OPEN_RESCUE_WEIGHT="${GVHMR_FINGER_FILTER_OPEN_RESCUE_WEIGHT:-0.25}"
 
-# ---- H1 wrist/hand input split ----
-# The H1 arm IK consumes the stable GVHMR/SMPL shoulder, elbow, and wrist
-# frame.  Hand4Whole++ remains responsible for the 21-joint hand geometry,
-# but its crop-camera global wrist orientation is not mixed into the
-# one-DoF H1 hand joint: that was the source of the delayed ~90-degree drift.
+# ---- G1 wrist / external-Sharpa split ----
+# The G1 arm IK consumes the stable GVHMR/SMPL shoulder, elbow, and wrist
+# frame. Hand4Whole++ controls only the external 22-DoF Sharpa chain; its
+# crop-camera wrist frame is not forced into the G1 body IK.
 export GMR_HAND_WRIST_ORIENTATION_MODE="${GMR_HAND_WRIST_ORIENTATION_MODE:-diagnostic}"
 export GMR_PALM_ROLL_MODE="${GMR_PALM_ROLL_MODE:-auto}"
 export GMR_PALM_ROLL_SOURCE="${GMR_PALM_ROLL_SOURCE:-smpl}"
@@ -130,9 +154,8 @@ export GMR_PALM_ROLL_MAX_ABS="${GMR_PALM_ROLL_MAX_ABS:-1.35}"
 export GMR_PALM_ROLL_BRANCH_MODE="${GMR_PALM_ROLL_BRANCH_MODE:-off}"
 
 # ---- Target-space robot hand retargeting ----
-# The H1 built-in 12-hinge hand cannot preserve the full MANO shape and its
-# legacy axis-component mapping clips many joints at zero.  Keep the stable H1
-# body/wrist, replace only the visual hand with a 22-DoF Sharpa chain solved
+# G1's native hand is disabled in this embodiment. The visual hand is a
+# 22-DoF Sharpa chain solved
 # from morphology-normalized PIP/DIP/tip targets.
 export GMR_HAND_RETARGET_MODE="${GMR_HAND_RETARGET_MODE:-off}"
 export GMR_SHARPA_HANDS="${GMR_SHARPA_HANDS:-1}"
@@ -140,7 +163,6 @@ export GMR_SHARPA_AUTO_RETARGET="${GMR_SHARPA_AUTO_RETARGET:-1}"
 export GMR_SHARPA_HAND_NPZ_NAME="${GMR_SHARPA_HAND_NPZ_NAME:-001_sharpa_chain_hands.npz}"
 export GMR_SHARPA_LEFT_MOUNT_QUAT="${GMR_SHARPA_LEFT_MOUNT_QUAT:-0.5,-0.5,0.5,-0.5}"
 export GMR_SHARPA_RIGHT_MOUNT_QUAT="${GMR_SHARPA_RIGHT_MOUNT_QUAT:-0.5,0.5,0.5,0.5}"
-export GMR_SHARPA_SCALE="${GMR_SHARPA_SCALE:-1.0}"
 export GMR_SHARPA_STEPS="${GMR_SHARPA_STEPS:-4}"
 export GMR_SHARPA_INIT_STEPS="${GMR_SHARPA_INIT_STEPS:-50}"
 export GMR_SHARPA_WRIST_POS_COST="${GMR_SHARPA_WRIST_POS_COST:-0.3}"
@@ -182,6 +204,7 @@ echo "GMR hand:  $GMR_EMBODIMENT_LABEL (selection=$GMR_HAND_MODEL, body_asset=$G
 echo "Speed:     vitpose_ds=$GVHMR_VITPOSE_IMG_DS batch=$GVHMR_HAND4WHOLEPP_BATCH_SIZE yolo_fallback=$GVHMR_HAND4WHOLEPP_YOLO_MODEL"
 echo "Memory:    isolated_hand4wholepp=$GVHMR_ISOLATE_HAND_PREPROCESS low_memory=$GVHMR_LOW_MEMORY checkpoint=mmap"
 echo "Geometry:  pose/joints source=$GVHMR_HAND4WHOLEPP_JOINT_SOURCE"
+echo "Crop track: mode=$GVHMR_HAND4WHOLEPP_CROP_TRACKING max_gap=$GVHMR_HAND4WHOLEPP_CROP_TRACKING_MAX_GAP direct_q=$GVHMR_HAND4WHOLEPP_CROP_TRACKING_DIRECT_OBSERVATION_QUALITY"
 echo "Filters:   wrist=$GVHMR_FILTER_MANO_WRIST temporal=$GVHMR_FILTER_MANO_TEMPORAL fingers=$GVHMR_FILTER_MANO_FINGERS hysup=$GVHMR_HYSUP_FUSION"
 echo "Profile:   $GVHMR_HAND_CONSTRAINT_PROFILE"
 echo "Diagnose:  $GVHMR_DIAGNOSE_HAND"

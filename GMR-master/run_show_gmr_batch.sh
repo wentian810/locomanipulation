@@ -2,11 +2,11 @@
 # Batch-retarget selected pipeline results under ../show into GMR robot motions.
 #
 # Default source is auto, which prefers the final PHC-grounded motion and
-# falls back to the best pre-PHC motion. Default height mode uses foot-only
-# MuJoCo geometry with a global offset, so non-foot low meshes do not lift
-# the robot feet off the floor. Override with:
-#   GMR_SOURCE=converted|smoothed|contact_stabilized|phc|phc_smoothed|auto bash run_show_gmr_batch.sh
-#   GMR_HEIGHT_ADJUST_MODE=global_foot_geom bash run_show_gmr_batch.sh
+# falls back to the best pre-PHC motion. G1+Sharpa uses support-aware foot
+# geometry: left/right/double support is grounded while flight is preserved.
+# Override with:
+#   GMR_SOURCE=final|converted|smoothed|contact_stabilized|phc|phc_smoothed|auto bash run_show_gmr_batch.sh
+#   GMR_HEIGHT_ADJUST_MODE=support_aware_foot_geom bash run_show_gmr_batch.sh
 #   GMR_CAMERA_SOURCE=fixed bash run_show_gmr_batch.sh
 #
 # Usage:
@@ -34,9 +34,21 @@ fi
 # Source shared GMR defaults — override any value by exporting it before calling this script
 source "${SCRIPT_DIR}/pipeline_defaults.sh"
 
+# Safe defaults for all embodiments. The support-aware mode is selected only
+# for G1+Sharpa, but the arguments are always forwarded to keep this wrapper
+# free of unset-variable failures under `set -u`.
+GMR_SUPPORT_CONTACT_HEIGHT="${GMR_SUPPORT_CONTACT_HEIGHT:-0.08}"
+GMR_SUPPORT_MAX_VERTICAL_SPEED="${GMR_SUPPORT_MAX_VERTICAL_SPEED:-1.20}"
+GMR_SUPPORT_MIN_CONTACT_RUN="${GMR_SUPPORT_MIN_CONTACT_RUN:-3}"
+GMR_SUPPORT_MAX_CONTACT_GAP="${GMR_SUPPORT_MAX_CONTACT_GAP:-1}"
+GMR_SUPPORT_ROOT_STEP_LIMIT="${GMR_SUPPORT_ROOT_STEP_LIMIT:-0.03}"
+
 DRY_RUN="${DRY_RUN:-0}"
 
 case "$GMR_SOURCE" in
+    final)
+        SOURCE_FILE="001_final.npz"
+        ;;
     converted)
         SOURCE_FILE="001_converted.npz"
         ;;
@@ -62,7 +74,7 @@ case "$GMR_SOURCE" in
         SOURCE_FILE="001_phc.npz"
         ;;
     *)
-        echo "Unsupported GMR_SOURCE=$GMR_SOURCE (use converted|smoothed|contact_stabilized|phc|phc_smoothed|phc_smoothed_grounded|phc_grounded|auto)" >&2
+        echo "Unsupported GMR_SOURCE=$GMR_SOURCE (use final|converted|smoothed|contact_stabilized|phc|phc_smoothed|phc_smoothed_grounded|phc_grounded|auto)" >&2
         exit 1
         ;;
 esac
@@ -506,6 +518,7 @@ if [ "$GMR_BRAINCO_HANDS" = "1" ]; then
 fi
 log "  object_proxy:     $GMR_OBJECT_PROXY source=$GMR_OBJECT_PROXY_SOURCE ${GMR_OBJECT_MOTION_NAME:-<none>}"
 log "  height_mode:      $GMR_HEIGHT_ADJUST_MODE"
+log "  support_contact:  height=${GMR_SUPPORT_CONTACT_HEIGHT:-<default>}m max_vz=${GMR_SUPPORT_MAX_VERTICAL_SPEED:-<default>}m/s"
 log "  camera_source:    $GMR_CAMERA_SOURCE"
 log "  relax_orient:     ${GMR_RELAX_ORIENTATION_BODIES:-<none>}"
 log "  include_clips:    ${GMR_SELECTED_CLIPS:-<all>}"
@@ -542,6 +555,11 @@ FORCE_WRIST_OVERRIDE_ARG=()
         --relax_orientation_bodies "$GMR_RELAX_ORIENTATION_BODIES" \
         --height_adjust_mode "$GMR_HEIGHT_ADJUST_MODE" \
         --ground_offset "$GMR_GROUND_OFFSET" \
+        --support_contact_height "$GMR_SUPPORT_CONTACT_HEIGHT" \
+        --support_max_vertical_speed "$GMR_SUPPORT_MAX_VERTICAL_SPEED" \
+        --support_min_contact_run "$GMR_SUPPORT_MIN_CONTACT_RUN" \
+        --support_max_contact_gap "$GMR_SUPPORT_MAX_CONTACT_GAP" \
+        --support_root_step_limit "$GMR_SUPPORT_ROOT_STEP_LIMIT" \
         --smooth_window "$GMR_SMOOTH_WINDOW" \
         --hand_smooth_window "$GMR_HAND_SMOOTH_WINDOW" \
         --hand_smooth_polyorder "$GMR_HAND_SMOOTH_POLYORDER" \
@@ -591,7 +609,6 @@ if [ "$GMR_SHARPA_HANDS" = "1" ] && [ "$GMR_SHARPA_AUTO_RETARGET" = "1" ]; then
     SHARPA_OUT_NAME="$GMR_SHARPA_HAND_NPZ_NAME" \
     SHARPA_INCLUDE_CLIPS="$GMR_SELECTED_CLIPS" \
     SHARPA_OVERRIDE="$GMR_OVERRIDE" \
-    SHARPA_SCALE="$GMR_SHARPA_SCALE" \
     SHARPA_STEPS="$GMR_SHARPA_STEPS" \
     SHARPA_INIT_STEPS="$GMR_SHARPA_INIT_STEPS" \
     SHARPA_WRIST_POS_COST="$GMR_SHARPA_WRIST_POS_COST" \
@@ -636,7 +653,7 @@ if [ "$GMR_BRAINCO_HANDS" = "1" ] && [ "$GMR_BRAINCO_AUTO_RETARGET" = "1" ]; the
     BRAINCO_ROOT="$GMR_BRAINCO_ROOT" \
     BRAINCO_INCLUDE_CLIPS="$GMR_SELECTED_CLIPS" \
     BRAINCO_OVERRIDE="$GMR_OVERRIDE" \
-    BRAINCO_SCALE="$GMR_SHARPA_SCALE" \
+    BRAINCO_SCALE="1.0" \
     BRAINCO_STEPS="$GMR_SHARPA_STEPS" \
     BRAINCO_INIT_STEPS="$GMR_SHARPA_INIT_STEPS" \
     BRAINCO_WRIST_POS_COST="$GMR_SHARPA_WRIST_POS_COST" \
@@ -714,7 +731,6 @@ if [ "$GMR_RENDER" = "1" ]; then
                 if [ -f "$SHARPA_HAND_NPZ" ]; then
                     SHARPA_ARGS=(
                         --sharpa_hand_npz "$SHARPA_HAND_NPZ"
-                        --sharpa_scale "$GMR_SHARPA_RENDER_SCALE"
                         --sharpa_mount_pos "$GMR_SHARPA_MOUNT_POS"
                         --sharpa_left_mount_pos "$GMR_SHARPA_LEFT_MOUNT_POS"
                         --sharpa_right_mount_pos "$GMR_SHARPA_RIGHT_MOUNT_POS"
@@ -820,7 +836,7 @@ if [ "$GMR_RENDER" = "1" ]; then
             if [ -n "$OBJECT_MOTION_PATH" ] && [ -f "$OBJECT_MOTION_PATH" ]; then
                 OBJECT_ARGS=(--object_motion_path "$OBJECT_MOTION_PATH")
             fi
-            PYTHONPATH="${SCRIPT_DIR}:${PYTHONPATH:-}" run_logged "$PY_GMR" scripts/render_robot_motion_headless.py \
+            CUDA_VISIBLE_DEVICES= PYTHONPATH="${SCRIPT_DIR}:${PYTHONPATH:-}" run_logged "$PY_GMR" scripts/render_robot_motion_headless.py \
                 --robot "$GMR_ROBOT" \
                 --robot_motion_path "$motion" \
                 --video_path "$video" \

@@ -681,7 +681,6 @@ def main() -> None:
     parser.add_argument("--sharpa_root", default=DEFAULT_SHARPA_ROOT, type=pathlib.Path)
     parser.add_argument("--side", choices=["left", "right", "both"], default="both")
     parser.add_argument("--solver", default="daqp")
-    parser.add_argument("--scale", type=float, default=1.0)
     parser.add_argument("--wrist_pos_cost", type=float, default=0.3)
     parser.add_argument("--wrist_ori_cost", type=float, default=0.2)
     parser.add_argument("--finger_pos_cost", type=float, default=5.0)
@@ -716,7 +715,7 @@ def main() -> None:
     out = {
         "source_hand_npz": str(args.hand_npz),
         "sharpa_root": str(args.sharpa_root),
-        "scale": float(args.scale),
+        "scale": 1.0,
         "wrist_pos_cost": float(args.wrist_pos_cost),
         "wrist_ori_cost": float(args.wrist_ori_cost),
         "finger_pos_cost": float(args.finger_pos_cost),
@@ -746,7 +745,7 @@ def main() -> None:
             load_targets(
                 args.hand_npz,
                 side,
-                args.scale,
+                1.0,
                 args.reproj_good_px,
                 args.reproj_bad_px,
                 args.reproj_good_ratio,

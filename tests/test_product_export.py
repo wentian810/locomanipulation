@@ -6,6 +6,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import pickle
+import shutil
 from pathlib import Path
 
 import numpy as np
@@ -86,7 +87,13 @@ def _fixture(tmp_path: Path) -> tuple[Path, dict, str]:
     )
     (clip_dir / "composite_2x2.mp4").write_bytes(b"preview")
 
-    xml = project / "GMR-master" / "assets" / "unitree_h1" / "h1_with_hand.xml"
+    xml = (
+        project
+        / "GMR-master"
+        / "assets"
+        / "unitree_g1"
+        / "g1_mocap_29dof.xml"
+    )
     xml.parent.mkdir(parents=True)
     xml.write_text(
         """
@@ -118,7 +125,6 @@ def _fixture(tmp_path: Path) -> tuple[Path, dict, str]:
             "include_preview": True,
             "require_preview": True,
             "object_policy": "exclude",
-            "rights": {},
             "retention": {
                 "prune_workspace_after_export": False,
                 "prune_object_work_after_export": False,
@@ -186,11 +192,9 @@ def test_export_is_compact_pickle_free_and_self_describing(tmp_path):
     result = EXPORTER.export_clip(project, config, clip)
     bundle = Path(result["bundle"])
 
-    assert (bundle / "human_motion.npz").is_file()
-    assert (bundle / "human_phc_motion.npz").is_file()
-    assert (bundle / "robot_motion.npz").is_file()
-    assert (bundle / "robot_hand_motion.npz").is_file()
-    assert (bundle / "camera.npz").is_file()
+    assert (bundle / "motion.npz").is_file()
+    assert not (bundle / "human_motion.npz").exists()
+    assert not (bundle / "robot_motion.npz").exists()
     assert not list(bundle.rglob("*.pkl"))
     assert not list(bundle.rglob("*.pt"))
     assert EXPORTER.verify_bundle(bundle)["status"] == "passed"
@@ -202,12 +206,13 @@ def test_export_is_compact_pickle_free_and_self_describing(tmp_path):
                 if np.issubdtype(archive[key].dtype, np.number):
                     assert np.isfinite(archive[key]).all()
 
-    with np.load(bundle / "robot_motion.npz", allow_pickle=False) as robot:
-        assert robot["root_quaternion_order"].item() == "xyzw"
-        assert robot["coordinate_system"].item() == "mujoco_world_z_up"
-        assert robot["dof_names"].tolist() == ["joint_a", "joint_b"]
+    with np.load(bundle / "motion.npz", allow_pickle=False) as motion:
+        assert motion["robot__root_quaternion_order"].item() == "xyzw"
+        assert motion["robot__coordinate_system"].item() == "mujoco_world_z_up"
+        assert motion["robot__dof_names"].tolist() == ["joint_a", "joint_b"]
     manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["rights"]["commercial_ready"] is False
+    assert "rights" not in manifest
+    assert not (bundle / "rights.json").exists()
     assert manifest["validation"]["status"] == "passed"
     for path in bundle.rglob("*"):
         if path.is_file() and path.suffix in {".json", ".yaml"}:
@@ -238,7 +243,7 @@ def test_batch_export_writes_relative_catalog(tmp_path):
     assert record["clip"] == clip
     assert record["bundle"] == clip
     assert record["has_object"] is False
-    assert record["commercial_ready"] is False
+    assert "commercial_ready" not in record
 
 
 def test_object_product_uses_relative_paths_and_enforces_expected_size(tmp_path):
@@ -247,12 +252,12 @@ def test_object_product_uses_relative_paths_and_enforces_expected_size(tmp_path)
 
     result = EXPORTER.export_clip(project, config, clip)
     bundle = Path(result["bundle"])
-    with np.load(bundle / "object_motion.npz", allow_pickle=False) as object_motion:
-        assert object_motion["visual_mesh_path"].item() == "object/mesh/mesh.obj"
-        assert object_motion["robot_coordinate_system"].item() == (
+    with np.load(bundle / "motion.npz", allow_pickle=False) as motion:
+        assert motion["object__visual_mesh_path"].item() == "object/mesh/mesh.obj"
+        assert motion["object__robot_coordinate_system"].item() == (
             "mujoco_robot_world_z_up"
         )
-        assert object_motion["robot_quat_wxyz"].shape == (4, 4)
+        assert motion["object__robot_quat_wxyz"].shape == (4, 4)
 
     config["object"]["clips"][clip]["expected_size_m"] = [0.1, 0.9]
     try:
@@ -305,3 +310,63 @@ def test_automated_quality_report_gates_product_export(tmp_path):
     manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
     assert bundled_report["status"] == "warn"
     assert manifest["quality"]["automated"]["status"] == "warn"
+
+
+def test_batch_quality_preflight_rejects_before_any_export(tmp_path):
+    project, config, good_clip = _fixture(tmp_path)
+    bad_clip = "bad_sample"
+    good_dir = project / "work" / good_clip
+    bad_dir = project / "work" / bad_clip
+    shutil.copytree(good_dir, bad_dir)
+    config["quality_evaluation"] = {"require_for_product": True}
+    config["product"]["minimum_quality_status"] = "warn"
+    (good_dir / "quality_report.json").write_text(
+        json.dumps({"clip": good_clip, "status": "warn"}),
+        encoding="utf-8",
+    )
+    (bad_dir / "quality_report.json").write_text(
+        json.dumps({"clip": bad_clip, "status": "fail"}),
+        encoding="utf-8",
+    )
+    product_root = project / "products"
+    product_root.mkdir(parents=True)
+    catalog = product_root / "catalog.jsonl"
+    catalog.write_text("previous catalog\n", encoding="utf-8")
+
+    try:
+        EXPORTER.export_from_config(
+            project, config, [good_clip, bad_clip]
+        )
+    except EXPORTER.ProductExportError as exc:
+        message = str(exc)
+        assert "quality preflight failed" in message
+        assert "no new bundles were exported" in message
+        assert bad_clip in message
+        assert "output_root=" in message
+        assert "product_root=" in message
+    else:
+        raise AssertionError("batch quality preflight should reject a failed clip")
+
+    assert not (product_root / good_clip).exists()
+    assert not (product_root / bad_clip).exists()
+    assert not list(product_root.glob(".*.export-*"))
+    assert catalog.read_text(encoding="utf-8") == "previous catalog\n"
+
+
+def test_product_rejects_stale_quality_schema_when_required(tmp_path):
+    project, config, clip = _fixture(tmp_path)
+    clip_dir = project / "work" / clip
+    config["quality_evaluation"] = {"require_for_product": True}
+    config["product"]["minimum_quality_schema_version"] = 2
+    (clip_dir / "quality_report.json").write_text(
+        json.dumps({"schema_version": 1, "clip": clip, "status": "warn"}),
+        encoding="utf-8",
+    )
+
+    try:
+        EXPORTER.export_clip(project, config, clip)
+    except EXPORTER.ProductExportError as exc:
+        assert "schema_version=1" in str(exc)
+        assert "rerun the quality stage" in str(exc)
+    else:
+        raise AssertionError("stale quality reports must be rejected")

@@ -13,6 +13,24 @@ human:
   constraint_profile: conservative
   hand_batch_size: 1
   diagnostics: false
+  # Keep batch outputs on the same Hand4Whole++ quality path as the
+  # inspection preset: bridge short crop-detector gaps, then accept 2D
+  # refinements only when held-out fingertip evidence does not regress.
+  hand_crop_tracking:
+    mode: flow_kalman
+    max_gap: 8
+    max_prediction_gap: 2
+    direct_observation_quality: 0.75
+  visible_hand_refine:
+    enabled: true
+    fit_partition: non_tip
+    holdout_min_keypoints: 3
+    holdout_max_relative_regression_px: 0.0
+
+environment:
+  # Hand4Whole++ filters alter MANO pose. Recompute its joints from that final
+  # pose so the GVHMR render and external Sharpa sidecar use one hand contract.
+  GVHMR_RECOMPUTE_DIRECT_MANO: 1
 
 phc:
   enabled: true
@@ -20,7 +38,7 @@ phc:
 gmr:
   enabled: true
   hand_model: sharpa
-  source: auto
+  source: final
   render: true
   composite_2x2: true
 

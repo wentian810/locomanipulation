@@ -94,6 +94,9 @@ def matrices_to_pose(matrices, like, had_people_axis):
 
 def as_people_frames(value, people, frames, dtype, default):
     if value is None:
+        default_array = np.asarray(default, dtype=dtype)
+        if default_array.shape == (people, frames):
+            return default_array.copy()
         return np.full((people, frames), default, dtype=dtype)
     array = np.asarray(as_numpy(value), dtype=dtype)
     if array.ndim == 1 and people == 1:
@@ -224,19 +227,32 @@ def evidence_quality(valid, reproj_error, bbox, pose, args):
     return np.clip(smooth_scores(quality, args.quality_smooth_window), 0.0, 1.0), diag
 
 
-def temporal_reference(pose, joints, quality, anchor_quality, max_gap, edge_hold):
-    """Build interpolation/hold fallback from frames with strong evidence."""
+def temporal_reference(
+    pose,
+    joints,
+    quality,
+    anchor_eligible,
+    anchor_quality,
+    max_gap,
+    edge_hold,
+):
+    """Build a fallback from strong, explicitly eligible source observations."""
 
     people, frames = quality.shape
     pose_ref = pose.copy()
     joints_ref = joints.copy()
     source = np.zeros((people, frames), dtype=np.int8)  # 0 raw, 1 interp, 2 prev hold, 3 next hold
     for person in range(people):
-        anchors = np.flatnonzero(quality[person] >= float(anchor_quality))
+        anchors = np.flatnonzero(
+            anchor_eligible[person] & (quality[person] >= float(anchor_quality))
+        )
         if anchors.size == 0:
             continue
         for frame in range(frames):
-            if quality[person, frame] >= float(anchor_quality):
+            if (
+                anchor_eligible[person, frame]
+                and quality[person, frame] >= float(anchor_quality)
+            ):
                 continue
             before = anchors[anchors < frame]
             after = anchors[anchors > frame]
@@ -290,6 +306,20 @@ def fuse_side(mano, side, args):
     people, frames = pose.shape[:2]
     joints = as_people_frame_joints(mano[joints_key], people, frames)
     valid = as_people_frames(mano.get(f"{side}_hand_valid"), people, frames, bool, True)
+    reliable_key = f"{side}_hand_reliable_mask"
+    source_reliable = as_people_frames(
+        mano.get(reliable_key), people, frames, bool, valid
+    )
+    if args.anchor_source == "source_reliable":
+        anchor_eligible = source_reliable
+        anchor_source = (
+            "source_reliable_mask"
+            if reliable_key in mano
+            else "valid_fallback_no_source_reliable_mask"
+        )
+    else:
+        anchor_eligible = valid
+        anchor_source = "valid_legacy"
     reproj = as_people_frames(
         mano.get(f"{side}_hand_reproj_error"), people, frames, np.float64, np.nan
     )
@@ -304,6 +334,7 @@ def fuse_side(mano, side, args):
         pose,
         joints,
         quality,
+        anchor_eligible,
         args.anchor_quality,
         args.max_interp_gap,
         args.max_edge_hold,
@@ -349,10 +380,21 @@ def fuse_side(mano, side, args):
             (fallback[0] if as_numpy(mano[pose_key]).ndim in {2, 4} else fallback).astype(bool),
             mano.get(f"{side}_hand_valid", mano[pose_key]),
         ),
+        f"{side}_hand_hysup_anchor_eligible_mask": to_like(
+            (
+                anchor_eligible[0]
+                if as_numpy(mano[pose_key]).ndim in {2, 4}
+                else anchor_eligible
+            ).astype(bool),
+            mano.get(f"{side}_hand_valid", mano[pose_key]),
+        ),
     }
     summary = {
         "skipped": False,
         "valid_frames": int(valid.sum()),
+        "source_reliable_frames": int(source_reliable.sum()),
+        "anchor_eligible_frames": int(anchor_eligible.sum()),
+        "anchor_source": anchor_source,
         "fallback_frames": int(fallback.sum()),
         "interpolated_frames": int(np.count_nonzero(reference_source == 1)),
         "previous_hold_frames": int(np.count_nonzero(reference_source == 2)),
@@ -379,6 +421,16 @@ def main():
     parser.add_argument("--temporal_bad_rad", type=float, default=0.45)
     parser.add_argument("--quality_smooth_window", type=int, default=5)
     parser.add_argument("--anchor_quality", type=float, default=0.85)
+    parser.add_argument(
+        "--anchor_source",
+        choices=("source_reliable", "valid_legacy"),
+        default="source_reliable",
+        help=(
+            "Use only original source-reliable observations as temporal "
+            "anchors when available. valid_legacy permits repaired frames and "
+            "is kept only for reproducing historical experiments."
+        ),
+    )
     parser.add_argument("--alpha_floor", type=float, default=0.10)
     parser.add_argument("--max_interp_gap", type=int, default=12)
     parser.add_argument("--max_edge_hold", type=int, default=6)
@@ -403,8 +455,11 @@ def main():
         "method": "confidence_weighted_temporal_articulation_fusion",
         "note": (
             "Finger fallback is a temporal MANO reference. Body-aware wrist fusion is handled by "
-            "filter_mano_wrist.py before this stage because the body branch has no independent finger pose."
+            "filter_mano_wrist.py before this stage because the body branch has no independent finger pose. "
+            "This output changes pose and joints independently; run recompute_direct_mano_joints.py "
+            "before any converter or renderer consumes it."
         ),
+        "requires_direct_mano_recompute": True,
         "config": vars(args).copy(),
         "sides": {},
     }
@@ -423,6 +478,7 @@ def main():
     summary.parent.mkdir(parents=True, exist_ok=True)
     summary.write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(f"Saved HySUP-inspired fused MANO params to {output}")
+    print("NOTE: run recompute_direct_mano_joints.py before converting or rendering this candidate")
     for side, details in report["sides"].items():
         print(f"  {side}: fallback_frames={details.get('fallback_frames', 0)}, alpha_p50={details.get('alpha', {}).get('p50', float('nan')):.3f}")
 

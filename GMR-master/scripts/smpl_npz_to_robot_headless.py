@@ -210,6 +210,229 @@ def robot_geom_lowest_heights(xml_file, root_pos, root_rot_xyzw, dof_pos, select
     return np.asarray(lowest_heights, dtype=np.float32)
 
 
+def _foot_geom_ids_by_side(model):
+    """Return sole-relevant MuJoCo geoms separately for the two robot feet."""
+    result = {"left": [], "right": []}
+    for geom_id in range(model.ngeom):
+        if int(model.geom_bodyid[geom_id]) == 0:
+            continue
+        geom_name = mj.mj_id2name(model, mj.mjtObj.mjOBJ_GEOM, geom_id) or ""
+        body_name = mj.mj_id2name(
+            model, mj.mjtObj.mjOBJ_BODY, int(model.geom_bodyid[geom_id])
+        ) or ""
+        label = f"{geom_name} {body_name}".lower()
+        if not any(token in label for token in ("foot", "toe", "ankle")):
+            continue
+        for side in result:
+            if side in label:
+                result[side].append(geom_id)
+    if not result["left"] or not result["right"]:
+        raise ValueError(
+            "support-aware floor alignment requires named left and right foot geoms"
+        )
+    return result
+
+
+def robot_foot_heights_by_side(xml_file, root_pos, root_rot_xyzw, dof_pos):
+    """Evaluate physical sole-bottom heights for each G1 foot at every frame."""
+    model = mj.MjModel.from_xml_path(str(xml_file))
+    data = mj.MjData(model)
+    side_geoms = _foot_geom_ids_by_side(model)
+    heights = np.empty((root_pos.shape[0], 2), dtype=np.float32)
+    for frame_idx in range(root_pos.shape[0]):
+        data.qpos[:3] = root_pos[frame_idx]
+        data.qpos[3:7] = root_rot_xyzw[frame_idx][[3, 0, 1, 2]]
+        data.qpos[7:] = dof_pos[frame_idx]
+        mj.mj_forward(model, data)
+        for side_idx, side in enumerate(("left", "right")):
+            heights[frame_idx, side_idx] = min(
+                geom_lower_z(model, data, geom_id)
+                for geom_id in side_geoms[side]
+            )
+    return heights
+
+
+def _bridge_short_false_gaps(mask, max_gap):
+    result = np.asarray(mask, dtype=bool).copy()
+    if max_gap <= 0 or result.size < 3:
+        return result
+    index = 0
+    while index < result.size:
+        if result[index]:
+            index += 1
+            continue
+        end = index
+        while end < result.size and not result[end]:
+            end += 1
+        if (
+            index > 0
+            and end < result.size
+            and result[index - 1]
+            and result[end]
+            and end - index <= max_gap
+        ):
+            result[index:end] = True
+        index = end
+    return result
+
+
+def _remove_short_true_runs(mask, min_run):
+    result = np.asarray(mask, dtype=bool).copy()
+    if min_run <= 1:
+        return result
+    index = 0
+    while index < result.size:
+        if not result[index]:
+            index += 1
+            continue
+        end = index
+        while end < result.size and result[end]:
+            end += 1
+        if end - index < min_run:
+            result[index:end] = False
+        index = end
+    return result
+
+
+def _median_filter_1d(values, window):
+    values = np.asarray(values, dtype=np.float32)
+    if window <= 1 or values.size <= 2:
+        return values.copy()
+    radius = max(0, int(window) // 2)
+    result = np.empty_like(values)
+    for index in range(values.size):
+        result[index] = np.median(values[max(0, index - radius) : index + radius + 1])
+    return result
+
+
+def support_aware_foot_alignment(
+    xml_file,
+    root_pos,
+    root_rot_xyzw,
+    dof_pos,
+    fps,
+    ground_offset,
+    contact_height,
+    max_vertical_speed,
+    min_contact_run,
+    max_contact_gap,
+    root_step_limit,
+):
+    """Align only detected support feet; preserve PHC vertical motion in flight.
+
+    This is deliberately a kinematic contact constraint, not a replacement for
+    MuJoCo dynamics.  The renderer writes qpos frame-by-frame, so gravity has
+    no authority over a retargeted trajectory.  The detector uses the actual
+    G1 sole geometry after one morphology calibration and returns a compact
+    per-frame support state for auditing.
+    """
+    root_pos = np.asarray(root_pos, dtype=np.float32).copy()
+    foot_heights = robot_foot_heights_by_side(
+        xml_file, root_pos, root_rot_xyzw, dof_pos
+    )
+    vertical_speed = np.zeros_like(foot_heights)
+    if foot_heights.shape[0] > 1:
+        vertical_speed[1:] = np.abs(np.diff(foot_heights, axis=0)) * float(fps)
+        vertical_speed[0] = vertical_speed[1]
+
+    contacts = (foot_heights <= float(contact_height)) & (
+        vertical_speed <= float(max_vertical_speed)
+    )
+    for side_index in range(2):
+        contact = _bridge_short_false_gaps(contacts[:, side_index], max_contact_gap)
+        contact = _remove_short_true_runs(contact, min_contact_run)
+        contacts[:, side_index] = _bridge_short_false_gaps(contact, max_contact_gap)
+
+    # 0=flight, 1=left support, 2=right support, 3=double support.
+    state_code = (
+        contacts[:, 0].astype(np.uint8)
+        + 2 * contacts[:, 1].astype(np.uint8)
+    )
+    support_mask = state_code != 0
+    safe_floor_shift = float(ground_offset) - np.min(foot_heights, axis=1)
+    requested_offset = np.zeros(root_pos.shape[0], dtype=np.float32)
+    for frame_index in np.flatnonzero(support_mask):
+        support_heights = foot_heights[frame_index, contacts[frame_index]]
+        requested_offset[frame_index] = max(
+            float(ground_offset) - float(np.min(support_heights)),
+            float(safe_floor_shift[frame_index]),
+        )
+
+    # Remove small sole-mesh jitter only within a support phase.  Flight
+    # frames remain at zero so their ballistic PHC vertical trajectory survives.
+    offset = requested_offset.copy()
+    index = 0
+    while index < offset.size:
+        if not support_mask[index]:
+            index += 1
+            continue
+        end = index
+        while end < offset.size and support_mask[end]:
+            end += 1
+        offset[index:end] = _median_filter_1d(offset[index:end], 5)
+        index = end
+
+    # Median filtering can be slightly more downward than the current sole
+    # permits.  Enforce the non-penetration bound before any temporal limiting,
+    # including frame zero.
+    offset = np.maximum(offset, safe_floor_shift)
+
+    # Bound correction velocity for a smooth take-off/re-landing transition.
+    # The floor bound wins over smoothing: a visual correction must never push
+    # any sole below the plane.
+    max_step = float(root_step_limit)
+    if max_step > 0.0:
+        for frame_index in range(1, offset.size):
+            offset[frame_index] = np.clip(
+                offset[frame_index],
+                offset[frame_index - 1] - max_step,
+                offset[frame_index - 1] + max_step,
+            )
+            offset[frame_index] = max(offset[frame_index], safe_floor_shift[frame_index])
+
+    root_pos[:, 2] += offset
+    post_heights = foot_heights + offset[:, None]
+    counts = {
+        "flight": int(np.sum(state_code == 0)),
+        "left": int(np.sum(state_code == 1)),
+        "right": int(np.sum(state_code == 2)),
+        "double": int(np.sum(state_code == 3)),
+    }
+    summary = {
+        "state_legend": {"0": "flight", "1": "left", "2": "right", "3": "double"},
+        "state_counts": counts,
+        "contact_height_m": float(contact_height),
+        "max_vertical_speed_m_s": float(max_vertical_speed),
+        "min_contact_run": int(min_contact_run),
+        "max_contact_gap": int(max_contact_gap),
+        "root_step_limit_m": float(root_step_limit),
+        "pre_foot_min_height_m": {
+            "min": float(np.min(foot_heights)),
+            "median": float(np.median(np.min(foot_heights, axis=1))),
+            "p90": float(np.percentile(np.min(foot_heights, axis=1), 90)),
+        },
+        "post_foot_min_height_m": {
+            "min": float(np.min(post_heights)),
+            "median": float(np.median(np.min(post_heights, axis=1))),
+            "p90": float(np.percentile(np.min(post_heights, axis=1), 90)),
+        },
+        "root_height_offset_m": {
+            "min": float(np.min(offset)),
+            "max": float(np.max(offset)),
+            "mean_abs": float(np.mean(np.abs(offset))),
+        },
+    }
+    return root_pos, {
+        "support_state_code": state_code,
+        "support_left_contact": contacts[:, 0],
+        "support_right_contact": contacts[:, 1],
+        "support_foot_height_m": foot_heights,
+        "support_foot_vertical_speed_m_s": vertical_speed,
+        "support_root_height_offset_m": offset,
+        "support_contact_summary": summary,
+    }
+
+
 def resolve_body_model_root(body_model_path, model_type):
     path = pathlib.Path(body_model_path).expanduser()
     if (path / model_type).exists():
@@ -1751,6 +1974,7 @@ def convert_file(src_file, tgt_file, args, device, hand_npz=None):
         fk_root_rot,
         torch.from_numpy(dof_pos).to(device=device, dtype=torch.float),
     )
+    support_contact_debug = {}
     if args.height_adjust_mode in {
         "per_frame_geom",
         "global_geom",
@@ -1769,6 +1993,33 @@ def convert_file(src_file, tgt_file, args, device, hand_npz=None):
             root_pos[:, 2] = root_pos[:, 2] - lowest_height + args.ground_offset
         else:
             root_pos[:, 2] = root_pos[:, 2] - float(np.min(lowest_height)) + args.ground_offset
+    elif args.height_adjust_mode == "support_aware_foot_geom":
+        # First resolve the fixed G1-vs-human morphology offset.  Then infer
+        # physical support phases from the G1 sole geometry and make only
+        # support-frame corrections; aerial frames retain the PHC trajectory.
+        lowest_height = robot_geom_lowest_heights(
+            retargeter.xml_file,
+            root_pos,
+            root_rot,
+            dof_pos,
+            selector="foot",
+        )
+        root_pos[:, 2] = (
+            root_pos[:, 2] - float(np.min(lowest_height)) + args.ground_offset
+        )
+        root_pos, support_contact_debug = support_aware_foot_alignment(
+            retargeter.xml_file,
+            root_pos,
+            root_rot,
+            dof_pos,
+            aligned_fps,
+            args.ground_offset,
+            args.support_contact_height,
+            args.support_max_vertical_speed,
+            args.support_min_contact_run,
+            args.support_max_contact_gap,
+            args.support_root_step_limit,
+        )
     elif args.height_adjust_mode != "none":
         body_pos, _ = kinematics_model.forward_kinematics(
             torch.from_numpy(root_pos).to(device=device, dtype=torch.float),
@@ -1821,6 +2072,7 @@ def convert_file(src_file, tgt_file, args, device, hand_npz=None):
         **wrist_soft_limit_debug,
         **retarget_mode_debug,
         **hand_valid_summary,
+        **support_contact_debug,
     }
     if hand_applied:
         motion_data["hand_retarget_applied"] = True
@@ -1929,17 +2181,50 @@ def main():
             "per_frame_geom",
             "global_foot_geom",
             "per_frame_foot_geom",
+            "support_aware_foot_geom",
             "none",
         ],
         default="global",
         help=(
             "global/per_frame use body origins; global_geom/per_frame_geom use MuJoCo geometry; "
             "global_foot_geom/per_frame_foot_geom use only foot/toe/ankle geometry; "
+            "support_aware_foot_geom detects left/right/double support from the "
+            "G1 sole geometry and preserves flight frames; "
             "none keeps raw root height."
         ),
     )
     parser.add_argument("--no_height_adjust", dest="height_adjust_mode", action="store_const", const="none")
     parser.add_argument("--ground_offset", default=0.0, type=float)
+    parser.add_argument(
+        "--support_contact_height",
+        default=0.08,
+        type=float,
+        help="Maximum sole height (m) eligible for a left/right support state.",
+    )
+    parser.add_argument(
+        "--support_max_vertical_speed",
+        default=1.20,
+        type=float,
+        help="Maximum sole vertical speed (m/s) eligible for support.",
+    )
+    parser.add_argument(
+        "--support_min_contact_run",
+        default=3,
+        type=int,
+        help="Minimum consecutive frames for a support phase.",
+    )
+    parser.add_argument(
+        "--support_max_contact_gap",
+        default=1,
+        type=int,
+        help="Fill contact-state gaps no longer than this many frames.",
+    )
+    parser.add_argument(
+        "--support_root_step_limit",
+        default=0.03,
+        type=float,
+        help="Maximum support-root correction change per frame (m); 0 disables limiting.",
+    )
     parser.add_argument("--smooth_window", default=9, type=int, help="Savgol smoothing window in frames; 0 disables smoothing.")
     parser.add_argument("--smooth_polyorder", default=2, type=int)
     parser.add_argument("--no_smooth", dest="smooth_window", action="store_const", const=0)
@@ -2148,6 +2433,17 @@ def main():
     parser.add_argument("--override", action="store_true")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
+
+    if args.support_contact_height <= 0.0:
+        raise ValueError("support_contact_height must be positive")
+    if args.support_max_vertical_speed <= 0.0:
+        raise ValueError("support_max_vertical_speed must be positive")
+    if args.support_min_contact_run <= 0:
+        raise ValueError("support_min_contact_run must be positive")
+    if args.support_max_contact_gap < 0:
+        raise ValueError("support_max_contact_gap must be non-negative")
+    if args.support_root_step_limit < 0.0:
+        raise ValueError("support_root_step_limit must be non-negative")
 
     if args.relax_orientation_bodies is None:
         hand_enabled = bool(args.hand_npz or args.auto_hand_npz)

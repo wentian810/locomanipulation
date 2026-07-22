@@ -2,6 +2,24 @@
 
 人体动作到人形机器人全身重定向管线（Loco-Manipulation Pipeline）。
 
+## 当前入口（人体-only）
+
+当前维护的运行线只处理人体、手部和 G1 + Sharpa 重定向；物体重建不在此入口中执行。
+
+- 主启动器：`scripts/run_pipeline_from_config.py`
+- 单视频/保留中间结果配置：`configs/pipelines/human_sharpa.yaml`
+- 批处理配置：`configs/pipelines/human_sharpa_batch.yaml`
+
+从仓库根目录运行人体全流程：
+
+```bash
+python scripts/run_pipeline_from_config.py \
+  --config configs/pipelines/human_sharpa_batch.yaml \
+  --stage human \
+  --disable-object
+```
+
+其余脚本由该启动器按配置调用，不作为独立的正式入口。
 ## 功能
 
 从 RGB 视频出发，端到端生成物理可行的机器人全身动作数据：

@@ -12,16 +12,36 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GVHMR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 PIPELINE_ROOT="${PIPELINE_ROOT:-$(cd "${GVHMR}/../.." && pwd)}"
 
+# This is the shared backend, not a reproducible public entrypoint.  It does
+# not know which embodiment/profile contract the caller intended unless a
+# backend wrapper or the config runner has frozen that contract first.
+if [ "${PIPELINE_WRAPPER_CONFIGURED:-0}" != "1" ] && \
+   [ "${PIPELINE_ALLOW_DIRECT_BATCH:-0}" != "1" ]; then
+    echo "ERROR: run_batch_dataset6.sh is an internal backend and refuses an unconfigured run." >&2
+    echo "Use: python scripts/run_pipeline_from_config.py --config_dir configs/pipelines/human_sharpa.yaml --stage human" >&2
+    echo "Or:  bash GVHMR-hand/GVHMR-main/tools/pipeline/run_batch_dataset6_hand4wholepp.sh" >&2
+    echo "For an explicitly frozen low-level debug environment only, set PIPELINE_ALLOW_DIRECT_BATCH=1." >&2
+    exit 2
+fi
+
 DATASET="${DATASET:-${PIPELINE_ROOT}/dataset_new6}"
 CLIP_FILTER="${CLIP_FILTER:-}"
-PIPELINE_SCRIPT="${SCRIPT_DIR}/run_pipeline.sh"
+# Kept overridable for non-inference smoke tests and frozen low-level debug
+# environments. Production wrappers leave this unset and always use the
+# in-tree pipeline.
+PIPELINE_SCRIPT="${PIPELINE_SCRIPT:-${SCRIPT_DIR}/run_pipeline.sh}"
 OUTPUT_BASE="${OUTPUT_BASE:-${PIPELINE_ROOT}/output_dir/kungfu_hand}"
 USE_WORK_VIDEO="${USE_WORK_VIDEO:-1}"
 WORK_DATASET="${WORK_DATASET:-${PIPELINE_ROOT}/dataset_new6_work_1280}"
 WORK_WIDTH="${WORK_WIDTH:-1280}"
 WORK_HEIGHT="${WORK_HEIGHT:-960}"
 WORK_CRF="${WORK_CRF:-18}"
+WORK_FPS="${WORK_FPS:-30}"
 FORCE_WORK_VIDEO="${FORCE_WORK_VIDEO:-0}"
+if [[ ! "$WORK_FPS" =~ ^30([.]0+)?$ ]]; then
+    echo "ERROR: WORK_FPS must be 30; PHC, GMR, and motion export currently share a 30 FPS contract." >&2
+    exit 2
+fi
 CONDA_BASE="${CONDA_BASE:-${HOME}/miniconda3}"
 if [ -d "${CONDA_BASE}/envs/locomotion/bin" ]; then
     export PATH="${CONDA_BASE}/envs/locomotion/bin:${PATH}"
@@ -42,6 +62,12 @@ GVHMR_HAND4WHOLEPP_PYTHON="${GVHMR_HAND4WHOLEPP_PYTHON:-}"
 GVHMR_HAND4WHOLEPP_BATCH_SIZE="${GVHMR_HAND4WHOLEPP_BATCH_SIZE:-4}"
 GVHMR_HAND4WHOLEPP_YOLO_MODEL="${GVHMR_HAND4WHOLEPP_YOLO_MODEL:-yolo11n.pt}"
 GVHMR_HAND4WHOLEPP_JOINT_SOURCE="${GVHMR_HAND4WHOLEPP_JOINT_SOURCE:-direct_mano}"
+# The generic backend forwards these for a deliberately opt-in crop-tracking
+# experiment. The Hand4Whole++ wrapper/config runner owns the default policy.
+export GVHMR_HAND4WHOLEPP_CROP_TRACKING="${GVHMR_HAND4WHOLEPP_CROP_TRACKING:-off}"
+export GVHMR_HAND4WHOLEPP_CROP_TRACKING_MAX_GAP="${GVHMR_HAND4WHOLEPP_CROP_TRACKING_MAX_GAP:-8}"
+export GVHMR_HAND4WHOLEPP_CROP_TRACKING_MAX_PREDICTION_GAP="${GVHMR_HAND4WHOLEPP_CROP_TRACKING_MAX_PREDICTION_GAP:-2}"
+export GVHMR_HAND4WHOLEPP_CROP_TRACKING_DIRECT_OBSERVATION_QUALITY="${GVHMR_HAND4WHOLEPP_CROP_TRACKING_DIRECT_OBSERVATION_QUALITY:-0.75}"
 GVHMR_VITPOSE_IMG_DS="${GVHMR_VITPOSE_IMG_DS:-1.0}"
 GVHMR_HAND_KPT_CONF_THR="${GVHMR_HAND_KPT_CONF_THR:-0.35}"
 GVHMR_HAND_KPT_LOW_CONF_THR="${GVHMR_HAND_KPT_LOW_CONF_THR:-0.2}"
@@ -100,8 +126,11 @@ GVHMR_FINGER_FILTER_WRIST_WEAK_SMOOTH_WEIGHT="${GVHMR_FINGER_FILTER_WRIST_WEAK_S
 GVHMR_FINGER_FILTER_WRIST_BAD_SMOOTH_WEIGHT="${GVHMR_FINGER_FILTER_WRIST_BAD_SMOOTH_WEIGHT:-1.0}"
 GVHMR_FINGER_FILTER_MAX_WRIST_ANGLE_DELTA="${GVHMR_FINGER_FILTER_MAX_WRIST_ANGLE_DELTA:-0.25}"
 GVHMR_FINGER_FILTER_HAND_SIZE_FLOOR_RATIO="${GVHMR_FINGER_FILTER_HAND_SIZE_FLOOR_RATIO:-0.96}"
+GVHMR_FINGER_FILTER_OPEN_RESCUE_ENABLED="${GVHMR_FINGER_FILTER_OPEN_RESCUE_ENABLED:-1}"
 GVHMR_FINGER_FILTER_OPEN_RESCUE_WEIGHT="${GVHMR_FINGER_FILTER_OPEN_RESCUE_WEIGHT:-0.30}"
 GVHMR_FINGER_FILTER_OPEN_RESCUE_SMOOTH_WEIGHT="${GVHMR_FINGER_FILTER_OPEN_RESCUE_SMOOTH_WEIGHT:-0.70}"
+GVHMR_RECOMPUTE_DIRECT_MANO="${GVHMR_RECOMPUTE_DIRECT_MANO:-0}"
+GVHMR_RECOMPUTE_DIRECT_MANO_BATCH_SIZE="${GVHMR_RECOMPUTE_DIRECT_MANO_BATCH_SIZE:-256}"
 GVHMR_DIAGNOSE_HAND="${GVHMR_DIAGNOSE_HAND:-0}"
 GVHMR_DIAGNOSE_HAND_WIDTH="${GVHMR_DIAGNOSE_HAND_WIDTH:-960}"
 GVHMR_SKIP_RENDER="${GVHMR_SKIP_RENDER:-0}"
@@ -120,7 +149,17 @@ GVHMR_HAND_REFINE_MAX_BURST="${GVHMR_HAND_REFINE_MAX_BURST:-10}"
 GVHMR_HAND_REFINE_SMOOTH_WINDOW="${GVHMR_HAND_REFINE_SMOOTH_WINDOW:-0}"
 RENDER_COMPARISON="${RENDER_COMPARISON:-0}"
 
-EVALUATE="${EVALUATE:-1}"
+# The inline numeric scorer below is retired.  It cannot safely interpret the
+# current flattened Hand4Whole++ schema and also conflates robot-fit residuals
+# with human-hand quality.  Formal pass/warn/fail quality reports are emitted
+# only by scripts/run_pipeline_from_config.py -> evaluate_clip_quality.py.
+if [ "${EVALUATE:-0}" != "0" ]; then
+    echo "ERROR: EVALUATE refers to the retired inline evaluator and must remain 0." >&2
+    echo "Use scripts/evaluate_clip_quality.py through run_pipeline_from_config.py instead." >&2
+    exit 2
+fi
+EVALUATE=0
+export EVALUATE
 EVAL_SCORE_WEIGHT_HAND_VALID="${EVAL_SCORE_WEIGHT_HAND_VALID:-25}"
 EVAL_SCORE_WEIGHT_HAND_REPROJ="${EVAL_SCORE_WEIGHT_HAND_REPROJ:-20}"
 EVAL_SCORE_WEIGHT_CHAIN_ERROR="${EVAL_SCORE_WEIGHT_CHAIN_ERROR:-30}"
@@ -156,8 +195,10 @@ echo "Script:  $PIPELINE_SCRIPT"
 echo "GMR:     $RUN_GMR ($GMR_EMBODIMENT_LABEL; body_asset=$GMR_ROBOT)"
 echo "Work:    ${WORK_WIDTH}x${WORK_HEIGHT}, hand_backend=${GVHMR_HAND_BACKEND}, h4w_joint_source=${GVHMR_HAND4WHOLEPP_JOINT_SOURCE}, isolate_hand=${GVHMR_ISOLATE_HAND_PREPROCESS}, low_memory=${GVHMR_LOW_MEMORY}, vitpose_img_ds=${GVHMR_VITPOSE_IMG_DS}, hand_crop_scales=${GVHMR_HAMER_BBOX_RESCALE_CANDIDATES:-$GVHMR_HAMER_BBOX_RESCALE}, switch_penalty=${GVHMR_HAMER_CANDIDATE_SWITCH_PENALTY}, hand_conf=${GVHMR_HAND_KPT_CONF_THR}/${GVHMR_HAND_KPT_LOW_CONF_THR}, bbox_smooth=${GVHMR_HAND_BBOX_SMOOTHING}, bbox_jump=${GVHMR_HAND_BBOX_MAX_JUMP}, bbox_iou=${GVHMR_HAND_BBOX_OVERLAP_IOU}, bbox_ratio=${GVHMR_HAND_BBOX_COLLISION_SCORE_RATIO}, refine_steps=${GVHMR_HAMER_REFINE_STEPS}"
 echo "Wrist:   filter=${GVHMR_FILTER_MANO_WRIST}, w_temp=${GVHMR_WRIST_FILTER_W_TEMP}, w_body=${GVHMR_WRIST_FILTER_W_BODY}"
+echo "Hand crop tracking: mode=${GVHMR_HAND4WHOLEPP_CROP_TRACKING}, max_gap=${GVHMR_HAND4WHOLEPP_CROP_TRACKING_MAX_GAP}, max_prediction_gap=${GVHMR_HAND4WHOLEPP_CROP_TRACKING_MAX_PREDICTION_GAP}, direct_quality=${GVHMR_HAND4WHOLEPP_CROP_TRACKING_DIRECT_OBSERVATION_QUALITY}"
 echo "Temporal filter: ${GVHMR_FILTER_MANO_TEMPORAL}, window=${GVHMR_TEMPORAL_FILTER_BBOX_WINDOW}, max_gap=${GVHMR_TEMPORAL_FILTER_MAX_INTERP_GAP}"
 echo "Finger filter: ${GVHMR_FILTER_MANO_FINGERS}, window=${GVHMR_FINGER_FILTER_SMOOTH_WINDOW}, max_gap=${GVHMR_FINGER_FILTER_MAX_INTERP_GAP}, size_floor=${GVHMR_FINGER_FILTER_HAND_SIZE_FLOOR_RATIO}"
+echo "Direct MANO recompute: ${GVHMR_RECOMPUTE_DIRECT_MANO}, batch_size=${GVHMR_RECOMPUTE_DIRECT_MANO_BATCH_SIZE}"
 echo "Constraint profile: ${GVHMR_HAND_CONSTRAINT_PROFILE}"
 echo "Hand diagnostic: ${GVHMR_DIAGNOSE_HAND}, width=${GVHMR_DIAGNOSE_HAND_WIDTH}"
 echo "Palm:    source=${GMR_PALM_ROLL_SOURCE}, gain=${GMR_PALM_ROLL_GAIN}, max_delta=${GMR_PALM_ROLL_MAX_DELTA}, max_abs=${GMR_PALM_ROLL_MAX_ABS}, branch=${GMR_PALM_ROLL_BRANCH_MODE}"
@@ -168,14 +209,22 @@ mkdir -p "$OUTPUT_BASE"
 mapfile -t VIDEOS < <(
     find "$DATASET" -maxdepth 1 -type f \
         \( -iname '*.mp4' -o -iname '*.mov' -o -iname '*.avi' -o -iname '*.mkv' -o -iname '*.m4v' \) \
-        -print0 | sort -z | xargs -0 -n1 echo
+        -print0 | sort -z | xargs -0 -r -n1 echo
 )
 if [ -n "$CLIP_FILTER" ]; then
     FILTERED_VIDEOS=()
+    IFS=',' read -r -a CLIP_FILTERS <<< "$CLIP_FILTER"
     for video in "${VIDEOS[@]}"; do
-        if [[ "$(basename "$video")" == *"$CLIP_FILTER"* ]]; then
-            FILTERED_VIDEOS+=("$video")
-        fi
+        filename="$(basename "$video")"
+        for filter in "${CLIP_FILTERS[@]}"; do
+            filter="${filter#"${filter%%[![:space:]]*}"}"
+            filter="${filter%"${filter##*[![:space:]]}"}"
+            [ -n "$filter" ] || continue
+            if [[ "$filename" == *"$filter"* ]]; then
+                FILTERED_VIDEOS+=("$video")
+                break
+            fi
+        done
     done
     VIDEOS=("${FILTERED_VIDEOS[@]}")
 fi
@@ -215,21 +264,85 @@ for i in "${!VIDEOS[@]}"; do
         WORK_CONFIG_MARKER="${INPUT_VIDEO}.config"
         WORK_CONFIG="$(
             printf '%s\n' \
+                "schema=2" \
                 "source=$(realpath "$VIDEO")" \
                 "source_stat=$(stat -c '%s:%Y' "$VIDEO")" \
                 "width=$WORK_WIDTH" \
                 "height=$WORK_HEIGHT" \
-                "crf=$WORK_CRF"
+                "crf=$WORK_CRF" \
+                "fps=$WORK_FPS"
         )"
         WORK_CONFIG_MATCH=0
         if [ -f "$WORK_CONFIG_MARKER" ] && [ "$(cat "$WORK_CONFIG_MARKER")" = "$WORK_CONFIG" ]; then
             WORK_CONFIG_MATCH=1
         fi
-        if [ "$FORCE_WORK_VIDEO" = "1" ] || [ ! -f "$INPUT_VIDEO" ] || [ "$WORK_CONFIG_MATCH" != "1" ]; then
+        # The marker validates the requested conversion, but it cannot prove
+        # that the MP4 with the same name is intact.  A stale 50-frame
+        # 960x720 cache can otherwise masquerade as the requested 1280x960
+        # full clip and make the person tracker fail with no detections.
+        WORK_MEDIA_MATCH=0
+        if [ "$WORK_CONFIG_MATCH" = "1" ] && [ -f "$INPUT_VIDEO" ]; then
+            if python - "$VIDEO" "$INPUT_VIDEO" "$WORK_WIDTH" "$WORK_HEIGHT" "$WORK_FPS" <<'PY'
+import cv2
+import math
+import sys
+
+source_path, work_path, max_width, max_height, target_fps = sys.argv[1:]
+max_width, max_height, target_fps = int(max_width), int(max_height), float(target_fps)
+
+def metadata(path):
+    cap = cv2.VideoCapture(path)
+    if not cap.isOpened():
+        raise RuntimeError(f"could not open {path}")
+    values = (
+        int(round(cap.get(cv2.CAP_PROP_FRAME_COUNT))),
+        int(round(cap.get(cv2.CAP_PROP_FRAME_WIDTH))),
+        int(round(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))),
+        float(cap.get(cv2.CAP_PROP_FPS)),
+    )
+    cap.release()
+    return values
+
+try:
+    source_frames, _, _, source_fps = metadata(source_path)
+    work_frames, work_width, work_height, work_fps = metadata(work_path)
+    if min(source_frames, work_frames, work_width, work_height) <= 0:
+        raise RuntimeError("missing frame or geometry metadata")
+    if source_fps <= 0 or work_fps <= 0:
+        raise RuntimeError("missing FPS metadata")
+    # force_original_aspect_ratio=decrease must fit inside the target and
+    # touch at least one target edge. Both dimensions are even after ffmpeg.
+    geometry_ok = (
+        work_width <= max_width
+        and work_height <= max_height
+        and (work_width == max_width or work_height == max_height)
+        and work_width % 2 == 0
+        and work_height % 2 == 0
+    )
+    duration_error = abs(work_frames / work_fps - source_frames / source_fps)
+    duration_tolerance = max(0.25, 0.01 * (source_frames / source_fps))
+    fps_ok = abs(work_fps - target_fps) <= 0.05
+    if not geometry_ok or not fps_ok or duration_error > duration_tolerance:
+        raise RuntimeError(
+            f"source={source_frames}@{source_fps:.3f}; "
+            f"work={work_frames}@{work_fps:.3f}, {work_width}x{work_height}; "
+            f"expected<= {max_width}x{max_height} at {target_fps:.3f} FPS"
+        )
+except Exception as exc:
+    print(f"work-video media validation failed: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+PY
+            then
+                WORK_MEDIA_MATCH=1
+            else
+                echo "Cached work video failed media validation; rebuilding: $INPUT_VIDEO"
+            fi
+        fi
+        if [ "$FORCE_WORK_VIDEO" = "1" ] || [ ! -f "$INPUT_VIDEO" ] || [ "$WORK_CONFIG_MATCH" != "1" ] || [ "$WORK_MEDIA_MATCH" != "1" ]; then
             echo -e "${B}Creating work video:${N} $INPUT_VIDEO"
             ffmpeg -hide_banner -loglevel error -y \
                 -i "$VIDEO" \
-                -vf "scale=${WORK_WIDTH}:${WORK_HEIGHT}:force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2" \
+                -vf "fps=${WORK_FPS},scale=${WORK_WIDTH}:${WORK_HEIGHT}:force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2" \
                 -c:v libx264 -preset veryfast -crf "$WORK_CRF" -pix_fmt yuv420p -an \
                 "$INPUT_VIDEO"
             printf '%s\n' "$WORK_CONFIG" > "$WORK_CONFIG_MARKER"
@@ -310,9 +423,12 @@ for i in "${!VIDEOS[@]}"; do
 		       GVHMR_FINGER_FILTER_WRIST_WEAK_SMOOTH_WEIGHT="$GVHMR_FINGER_FILTER_WRIST_WEAK_SMOOTH_WEIGHT" \
 		       GVHMR_FINGER_FILTER_WRIST_BAD_SMOOTH_WEIGHT="$GVHMR_FINGER_FILTER_WRIST_BAD_SMOOTH_WEIGHT" \
 		       GVHMR_FINGER_FILTER_MAX_WRIST_ANGLE_DELTA="$GVHMR_FINGER_FILTER_MAX_WRIST_ANGLE_DELTA" \
-		       GVHMR_FINGER_FILTER_HAND_SIZE_FLOOR_RATIO="$GVHMR_FINGER_FILTER_HAND_SIZE_FLOOR_RATIO" \
-		       GVHMR_FINGER_FILTER_OPEN_RESCUE_WEIGHT="$GVHMR_FINGER_FILTER_OPEN_RESCUE_WEIGHT" \
+	       GVHMR_FINGER_FILTER_HAND_SIZE_FLOOR_RATIO="$GVHMR_FINGER_FILTER_HAND_SIZE_FLOOR_RATIO" \
+	       GVHMR_FINGER_FILTER_OPEN_RESCUE_ENABLED="$GVHMR_FINGER_FILTER_OPEN_RESCUE_ENABLED" \
+	       GVHMR_FINGER_FILTER_OPEN_RESCUE_WEIGHT="$GVHMR_FINGER_FILTER_OPEN_RESCUE_WEIGHT" \
 		       GVHMR_FINGER_FILTER_OPEN_RESCUE_SMOOTH_WEIGHT="$GVHMR_FINGER_FILTER_OPEN_RESCUE_SMOOTH_WEIGHT" \
+	       GVHMR_RECOMPUTE_DIRECT_MANO="$GVHMR_RECOMPUTE_DIRECT_MANO" \
+	       GVHMR_RECOMPUTE_DIRECT_MANO_BATCH_SIZE="$GVHMR_RECOMPUTE_DIRECT_MANO_BATCH_SIZE" \
 		       GVHMR_DIAGNOSE_HAND="$GVHMR_DIAGNOSE_HAND" \
 		       GVHMR_DIAGNOSE_HAND_WIDTH="$GVHMR_DIAGNOSE_HAND_WIDTH" \
 		       GVHMR_SKIP_RENDER="$GVHMR_SKIP_RENDER" \
@@ -326,6 +442,7 @@ for i in "${!VIDEOS[@]}"; do
 	       GVHMR_HAND_REFINE_GAP_MERGE="$GVHMR_HAND_REFINE_GAP_MERGE" \
 	       GVHMR_HAND_REFINE_MAX_BURST="$GVHMR_HAND_REFINE_MAX_BURST" \
 	       GVHMR_HAND_REFINE_SMOOTH_WINDOW="$GVHMR_HAND_REFINE_SMOOTH_WINDOW" \
+	       GVHMR_EXPORT_FPS="$WORK_FPS" \
 	       SKIP_PHC="$SKIP_PHC" \
 	       FORCE_PHC="$FORCE_PHC" \
 	       RENDER_COMPARISON="$RENDER_COMPARISON" \
@@ -410,7 +527,6 @@ if [ "$RUN_GMR" = "1" ] && [ "$PASS" -gt 0 ]; then
     GMR_SHARPA_MOUNT_QUAT="$GMR_SHARPA_MOUNT_QUAT" \
     GMR_SHARPA_LEFT_MOUNT_QUAT="$GMR_SHARPA_LEFT_MOUNT_QUAT" \
     GMR_SHARPA_RIGHT_MOUNT_QUAT="$GMR_SHARPA_RIGHT_MOUNT_QUAT" \
-    GMR_SHARPA_SCALE="$GMR_SHARPA_SCALE" \
     GMR_SHARPA_STEPS="$GMR_SHARPA_STEPS" \
     GMR_SHARPA_INIT_STEPS="$GMR_SHARPA_INIT_STEPS" \
     GMR_SHARPA_WRIST_POS_COST="$GMR_SHARPA_WRIST_POS_COST" \

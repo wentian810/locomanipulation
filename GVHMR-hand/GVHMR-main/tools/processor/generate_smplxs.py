@@ -765,7 +765,11 @@ def render_incam(cfg, retarget=False):
         return
 
     pred = torch.load(cfg.paths.hmr4d_results, weights_only=True)
-    smplx = make_smplx("supermotion").cuda()
+    # Hand4Whole++ supplies a full 15x3 MANO pose.  The SuperMotion default
+    # uses a 12-D hand PCA space, which silently projects that pose before
+    # rendering and visibly distorts fingers.  Keep the body model unchanged,
+    # but render the hand in its native 45-D axis-angle representation.
+    smplx = make_smplx("supermotion", use_pca=False).cuda()
     smplx2smpl = torch.load("hmr4d/utils/body_model/smplx2smpl_sparse.pt", weights_only=True).cuda()   # (6890, 10475)
     faces_smpl = make_smplx("smpl").faces   # (face_num, 3)
     mano_params = load_mano_if_available(cfg)
@@ -821,7 +825,9 @@ def render_global(cfg, retarget=False):
 
     debug_cam = False
     pred = torch.load(cfg.paths.hmr4d_results)
-    smplx = make_smplx("supermotion").cuda()
+    # See render_incam(): preserving the full MANO hand pose is required for
+    # the global render to match the direct-MANO track as well.
+    smplx = make_smplx("supermotion", use_pca=False).cuda()
     smplx2smpl = torch.load("hmr4d/utils/body_model/smplx2smpl_sparse.pt", weights_only=True).cuda()
     faces_smpl = make_smplx("smpl").faces
     J_regressor = torch.load("hmr4d/utils/body_model/smpl_neutral_J_regressor.pt", weights_only=True).cuda()
