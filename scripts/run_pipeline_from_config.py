@@ -1242,24 +1242,30 @@ class PipelineRunner:
             )
         return videos
 
-    def _completed_product_videos(
-        self, *, report_missing: bool = False
-    ) -> list[Path]:
-        """Return product candidates with a completed GMR motion file."""
+    def _completed_output_clips(self) -> list[str]:
+        """Return clips that actually completed the human/GMR stage."""
         output_root = self._path(self.config["output"]["root"])
-        completed = []
-        for video in self._product_videos():
-            motion_path = output_root / video.stem / "robot_motion.pkl"
-            if motion_path.is_file():
-                completed.append(video)
-                continue
-            if report_missing:
-                print(
-                    f"[PRODUCT][SKIP] {video.stem}: missing robot_motion.pkl; "
-                    "human/GMR stage did not complete",
-                    flush=True,
-                )
-        return completed
+        if not output_root.is_dir():
+            return []
+        return sorted(
+            child.name
+            for child in output_root.iterdir()
+            if child.is_dir() and (child / "robot_motion.pkl").is_file()
+        )
+
+    def _completed_product_clips(self) -> list[str]:
+        """Apply product object policy to completed, not candidate, clips."""
+        clips = self._completed_output_clips()
+        product = self.config.get("product", {})
+        obj = self.config.get("object", {})
+        if (
+            obj.get("enabled", False)
+            and obj.get("only_configured_clips", True)
+            and product.get("object_policy", "if_valid") == "require_valid"
+        ):
+            configured = set(obj.get("clips", {}))
+            clips = [clip for clip in clips if clip in configured]
+        return clips
 
     def _quality_videos(self) -> list[Path]:
         videos = self._videos()
@@ -1284,7 +1290,7 @@ class PipelineRunner:
             raise FileNotFoundError(
                 f"runtime.python is not a file: {runtime_python}"
             )
-        videos = self._videos()
+        videos = self._videos() if stage in {"human", "object", "all"} else []
         human = self.config.get("human", {})
         hand_crop_tracking = human.get("hand_crop_tracking", {})
         if not isinstance(hand_crop_tracking, dict):
@@ -1348,18 +1354,6 @@ class PipelineRunner:
             quality = self.config.get("quality_evaluation", {})
             if not quality.get("enabled", False):
                 raise ValueError("quality_evaluation.enabled is false")
-            output_root = self._path(self.config["output"]["root"])
-            missing_outputs = [
-                output_root / video.stem / "robot_motion.pkl"
-                for video in self._quality_videos()
-                if not (output_root / video.stem / "robot_motion.pkl").is_file()
-            ]
-            if missing_outputs and not self.dry_run:
-                missing = "\n  ".join(str(path) for path in missing_outputs)
-                raise FileNotFoundError(
-                    "quality evaluation requires completed GMR outputs:\n  "
-                    f"{missing}"
-                )
         if stage in {"human", "all"}:
             preflight = self._fullbody_preflight_config()
             if bool(preflight.get("enabled", True)):
@@ -1755,11 +1749,10 @@ class PipelineRunner:
         if self._eligible_clips == set():
             print("[PRODUCT] no full-body-admitted clips; skipping export.")
             return
-        videos = self._completed_product_videos(report_missing=True)
-        if not videos:
+        clips = self._completed_product_clips()
+        if not clips:
             print("[PRODUCT] no completed human/GMR clips; skipping export.")
             return
-        clips = [video.stem for video in videos]
         export_from_config(
             self.root,
             self.config,
@@ -1775,12 +1768,13 @@ class PipelineRunner:
             print("[QUALITY] no full-body-admitted clips; skipping evaluation.")
             return
         quality_config = self.config
-        videos = self._quality_videos()
+        clips = self._completed_output_clips()
         if human_only and self.config.get("object", {}).get("enabled", False):
             quality_config = copy.deepcopy(self.config)
             quality_config.setdefault("object", {})["enabled"] = False
-            videos = self._videos()
-        clips = [video.stem for video in videos]
+        if not clips:
+            print("[QUALITY] no completed human/GMR clips; skipping evaluation.")
+            return
         evaluate_clips(
             self.root,
             quality_config,

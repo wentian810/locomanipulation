@@ -1671,11 +1671,10 @@ def main() -> None:
         dry_run=args.dry_run,
     )
     runner.check("product")
-    videos = runner._completed_product_videos(report_missing=True)
-    if not videos:
+    clips = runner._completed_product_clips()
+    if not clips:
         print("[PRODUCT] no completed human/GMR clips; skipping export.")
         return
-    clips = [path.stem for path in videos]
     export_from_config(runner.root, runner.config, clips, dry_run=args.dry_run)
 
 
