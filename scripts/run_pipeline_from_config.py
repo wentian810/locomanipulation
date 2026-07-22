@@ -1242,6 +1242,25 @@ class PipelineRunner:
             )
         return videos
 
+    def _completed_product_videos(
+        self, *, report_missing: bool = False
+    ) -> list[Path]:
+        """Return product candidates with a completed GMR motion file."""
+        output_root = self._path(self.config["output"]["root"])
+        completed = []
+        for video in self._product_videos():
+            motion_path = output_root / video.stem / "robot_motion.pkl"
+            if motion_path.is_file():
+                completed.append(video)
+                continue
+            if report_missing:
+                print(
+                    f"[PRODUCT][SKIP] {video.stem}: missing robot_motion.pkl; "
+                    "human/GMR stage did not complete",
+                    flush=True,
+                )
+        return completed
+
     def _quality_videos(self) -> list[Path]:
         videos = self._videos()
         obj = self.config.get("object", {})
@@ -1324,19 +1343,6 @@ class PipelineRunner:
             if output_root == product_root:
                 raise ValueError(
                     "product.root must differ from output.root"
-                )
-        if stage == "product":
-            output_root = self._path(self.config["output"]["root"])
-            missing_human_outputs = [
-                output_root / video.stem / "robot_motion.pkl"
-                for video in self._product_videos()
-                if not (output_root / video.stem / "robot_motion.pkl").is_file()
-            ]
-            if missing_human_outputs and not self.dry_run:
-                missing = "\n  ".join(str(path) for path in missing_human_outputs)
-                raise FileNotFoundError(
-                    "product export requires completed human/GMR outputs:\n  "
-                    f"{missing}"
                 )
         if stage == "quality":
             quality = self.config.get("quality_evaluation", {})
@@ -1749,7 +1755,11 @@ class PipelineRunner:
         if self._eligible_clips == set():
             print("[PRODUCT] no full-body-admitted clips; skipping export.")
             return
-        clips = [video.stem for video in self._product_videos()]
+        videos = self._completed_product_videos(report_missing=True)
+        if not videos:
+            print("[PRODUCT] no completed human/GMR clips; skipping export.")
+            return
+        clips = [video.stem for video in videos]
         export_from_config(
             self.root,
             self.config,
