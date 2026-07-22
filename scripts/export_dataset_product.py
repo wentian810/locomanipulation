@@ -1151,23 +1151,22 @@ def _preflight_export_quality(
     project_root: Path,
     config: dict[str, Any],
     clips: Iterable[str],
-) -> None:
+) -> tuple[list[str], list[dict[str, str]]]:
     _, output_root, product_root = _resolve_export_roots(project_root, config)
-    failures = []
+    eligible = []
+    skipped = []
     for clip in clips:
         try:
             clip_dir, _ = _resolve_export_clip_paths(
                 output_root, product_root, clip
             )
             _load_automated_quality_for_export(clip_dir, config, clip)
+            eligible.append(clip)
         except Exception as exc:
-            failures.append(str(exc))
-    if failures:
-        details = "\n  ".join(failures)
-        raise ProductExportError(
-            "product quality preflight failed; no new bundles were exported; "
-            f"output_root={output_root}; product_root={product_root}\n  {details}"
-        )
+            skipped.append(
+                {"clip": str(clip), "reason": str(exc)}
+            )
+    return eligible, skipped
 
 
 def export_clip(
@@ -1553,11 +1552,20 @@ def export_from_config(
         raise ProductExportError("duplicate clips were requested for product export")
     results = []
     completed = []
+    skipped = []
     retention = product_cfg.get("retention", {})
     prune = bool(retention.get("prune_workspace_after_export", False))
+    export_clips = clip_list
     if not dry_run:
-        _preflight_export_quality(project_root, config, clip_list)
-    for clip in clip_list:
+        export_clips, skipped = _preflight_export_quality(
+            project_root, config, clip_list
+        )
+        for item in skipped:
+            print(
+                f"[PRODUCT][SKIP] {item['clip']}: {item['reason']}",
+                flush=True,
+            )
+    for clip in export_clips:
         if dry_run:
             print(f"[DRY-RUN] export product: {clip}", flush=True)
             if prune:
@@ -1575,30 +1583,35 @@ def export_from_config(
             results.append(result)
             completed.append(clip)
         except Exception as exc:
-            _, output_root, product_root = _resolve_export_roots(
-                project_root, config
+            skipped.append(
+                {"clip": str(clip), "reason": f"export failed: {exc}"}
             )
-            raise ProductExportError(
-                "product export failed; no catalog was published; "
-                f"phase=export; clip={clip!r}; output_root={output_root}; "
-                f"product_root={product_root}; completed_clips={completed!r}; "
-                "already-promoted bundles are verified but were not rolled back: "
-                f"{exc}"
-            ) from exc
+            print(
+                f"[PRODUCT][SKIP] {clip}: export failed: {exc}",
+                flush=True,
+            )
 
     if dry_run:
         return results
 
-    try:
-        catalog = _write_product_catalog(project_root, config)
-    except Exception as exc:
-        _, output_root, product_root = _resolve_export_roots(project_root, config)
-        raise ProductExportError(
-            "all requested bundles were committed but catalog publication failed; "
-            f"output_root={output_root}; product_root={product_root}; "
-            f"completed_clips={completed!r}: {exc}"
-        ) from exc
-    print(f"[PRODUCT] catalog -> {catalog}", flush=True)
+    if results:
+        try:
+            catalog = _write_product_catalog(project_root, config)
+        except Exception as exc:
+            _, output_root, product_root = _resolve_export_roots(project_root, config)
+            raise ProductExportError(
+                "exported product bundles could not publish the catalog; "
+                f"output_root={output_root}; product_root={product_root}; "
+                f"completed_clips={completed!r}: {exc}"
+            ) from exc
+        print(f"[PRODUCT] catalog -> {catalog}", flush=True)
+    else:
+        print("[PRODUCT] no eligible clips were exported.", flush=True)
+    if skipped:
+        print(
+            f"[PRODUCT] export summary: exported={len(results)} skipped={len(skipped)}",
+            flush=True,
+        )
 
     if prune:
         for result in results:

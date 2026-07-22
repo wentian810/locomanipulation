@@ -312,7 +312,7 @@ def test_automated_quality_report_gates_product_export(tmp_path):
     assert manifest["quality"]["automated"]["status"] == "warn"
 
 
-def test_batch_quality_preflight_rejects_before_any_export(tmp_path):
+def test_batch_quality_preflight_skips_failed_clips(tmp_path):
     project, config, good_clip = _fixture(tmp_path)
     bad_clip = "bad_sample"
     good_dir = project / "work" / good_clip
@@ -321,36 +321,28 @@ def test_batch_quality_preflight_rejects_before_any_export(tmp_path):
     config["quality_evaluation"] = {"require_for_product": True}
     config["product"]["minimum_quality_status"] = "warn"
     (good_dir / "quality_report.json").write_text(
-        json.dumps({"clip": good_clip, "status": "warn"}),
+        json.dumps(
+            {"schema_version": 3, "clip": good_clip, "status": "warn"}
+        ),
         encoding="utf-8",
     )
     (bad_dir / "quality_report.json").write_text(
-        json.dumps({"clip": bad_clip, "status": "fail"}),
+        json.dumps(
+            {"schema_version": 3, "clip": bad_clip, "status": "fail"}
+        ),
         encoding="utf-8",
     )
-    product_root = project / "products"
-    product_root.mkdir(parents=True)
-    catalog = product_root / "catalog.jsonl"
-    catalog.write_text("previous catalog\n", encoding="utf-8")
 
-    try:
-        EXPORTER.export_from_config(
-            project, config, [good_clip, bad_clip]
-        )
-    except EXPORTER.ProductExportError as exc:
-        message = str(exc)
-        assert "quality preflight failed" in message
-        assert "no new bundles were exported" in message
-        assert bad_clip in message
-        assert "output_root=" in message
-        assert "product_root=" in message
-    else:
-        raise AssertionError("batch quality preflight should reject a failed clip")
+    results = EXPORTER.export_from_config(project, config, [good_clip, bad_clip])
 
-    assert not (product_root / good_clip).exists()
-    assert not (product_root / bad_clip).exists()
-    assert not list(product_root.glob(".*.export-*"))
-    assert catalog.read_text(encoding="utf-8") == "previous catalog\n"
+    assert len(results) == 1
+    assert results[0]["clip"] == good_clip
+    assert Path(results[0]["bundle"]).is_dir()
+    assert not (project / "products" / bad_clip).exists()
+    assert not list((project / "products").glob(".*.export-*"))
+    catalog = project / "products" / "catalog.jsonl"
+    record = json.loads(catalog.read_text(encoding="utf-8"))
+    assert record["clip"] == good_clip
 
 
 def test_product_rejects_stale_quality_schema_when_required(tmp_path):
