@@ -4,7 +4,7 @@
 
 本项目把“小而可审计的源码”和“大而受许可约束的运行时物料”分开发布：源码、配置、文档和启动脚本在 GitHub；Docker 镜像、两个 Conda 环境的固化结果、PHC 运行时、模型资产和示例视频在 UCloud US3。接收方不需要复制服务器的 Conda 环境，也不应从项目目录手工拼装依赖。
 
-运行脚本会把 GitHub checkout 中的 `GVHMR-hand/GVHMR-main/hmr4d/`、`tools/pipeline/` 和容器 preflight 脚本以只读方式覆盖挂载到镜像同一路径；这保证 GVHMR Python 源码、平滑/地面修正脚本与发布 commit 完全一致，同时复用镜像内已验证的 CUDA、Conda、PHC 和 Isaac Gym runtime。脚本也为 conda-pack 中失效的 editable `chumpy` 路径补充镜像内只读源码路径，并把模型包的 `assets/` 目录只读挂载为 GMR 的 `GMR_BODY_MODEL_PATH`，避免旧镜像内的兼容链接覆盖 GVHMR 的 SMPL-X 挂载。不要只下载 image 后直接执行，而要通过仓库的 `release/run_human_only_docker.sh` 启动。
+运行脚本会把 GitHub checkout 中的 `GVHMR-hand/GVHMR-main/hmr4d/`、`tools/pipeline/`、GMR renderer 和容器 preflight 脚本以只读方式覆盖挂载到镜像同一路径；这保证 GVHMR Python 源码、平滑/地面修正脚本、GMR 渲染器与发布 commit 完全一致，同时复用镜像内已验证的 CUDA、Conda、PHC 和 Isaac Gym runtime。脚本也为 conda-pack 中失效的 editable `chumpy` 路径补充镜像内只读源码路径，并把模型包的 `assets/` 目录只读挂载为 GMR 的 `GMR_BODY_MODEL_PATH`，避免旧镜像内的兼容链接覆盖 GVHMR 的 SMPL-X 挂载；GMR 生成的临时渲染 XML 只写入容器 `/tmp`，不会改动模型资产。不要只下载 image 后直接执行，而要通过仓库的 `release/run_human_only_docker.sh` 启动。
 
 这一说明对应 human-only 全链路：`视频 -> GVHMR/Hand4Whole++ -> Locomotion -> PHC -> GMR/Sharpa -> 质量/资产`。不包含场景、物体、S3 视频采集或对象重建功能。
 
@@ -27,6 +27,8 @@ Release `20260806` 的对象名如下。以远端 `SHA256SUMS` 为唯一完整�
 | `human-pipeline-support-contacts_20260806.tar.zst` | 可选，历史源码审计快照 | 仅供归档核验；不能替代 GitHub checkout，也不被 release runner 使用 |
 | `locomotion-human-only_20260806.docker.tar.zst` | Docker image store | 固化的 CUDA 11.8、`locomotion` / `phc` Conda 环境、PHC/Isaac Gym 和运行时代码；tag 为 `locomotion-human-only:20260806` |
 | `human-only-model-assets_20260806.tar.zst` | `<repo>/.release/20260806/extracted/model-assets` | GVHMR、HMR2、ViTPose、Hand4Whole++、WiLoR、SMPL/SMPL-X、Locomotion 的 SMPL-H/ACCAD 资产 |
+| `human-only-gmr-unitree-g1-assets_20260806.tar.zst` | `<repo>/.release/20260806/extracted/gmr-unitree-g1-assets` | GMR Unitree G1 的 URDF、MJCF、Sharpa 描述与全部网格；它与权重分开归档，但也是 human-only 的必需运行时资产 |
+| `human-only-phc-sample-data_20260806.tar.zst` | `<repo>/.release/20260806/extracted/phc-sample-data` | PHC 启动所需的 AMASS 性别/形状与站立样本；只读挂载到 PHC 的 `sample_data/`，不可省略 |
 | `dataset_new6_20260806.tar.zst` | `<repo>/.release/20260806/extracted/dataset/dataset_new6` | 七条示例原视频；用于自检和回归，不是生产输入的唯一来源 |
 | `SHA256SUMS` | `<repo>/.release/20260806` | 上述归档的 SHA-256 清单 |
 
@@ -81,7 +83,7 @@ bash release/bootstrap_from_ucloud.sh \
 
 `--artifact-dir` 会原地读取 `SHA256SUMS` 和归档、验证哈希、解压到测试位置并加载 Docker image；不会网络下载、复制或修改原始交付归档。这样 S3 上传和服务器验收相互独立。
 
-生产视频不需要重新打镜像，只要将 `run_human_only_docker.sh` 中的 `/data/input` 映射改为自己的单人视频目录，并保持模型挂载为只读。当前脚本默认使用 S3 包内的回归数据，以便交接验收有确定输入。
+生产视频不需要重新打镜像，只要将 `run_human_only_docker.sh` 中的 `/data/input` 映射改为自己的单人视频目录，并保持模型挂载为只读。当前脚本默认使用 S3 包内的回归数据，以便交接验收有确定输入。产品导出根会被固定为宿主输出目录中的 `product/`，不会写入容器临时层；容器退出后仍保留 `manifest.json`、`checksums.sha256`、`catalog.jsonl` 与每条 clip 的交付资产。启动器会在推理结束（即使推理失败）后把这两个可写挂载目录归还给运行脚本的宿主用户，接收方无需用 root 才能读取结果。
 
 ## 5. “跑通”的可验证定义
 

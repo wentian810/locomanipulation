@@ -52,7 +52,9 @@ if [[ "$REQUIRE_MODELS" = "1" ]]; then
     /models/hand4whole/demo/snapshot_6.pth \
     /models/locomotion_assets/smplh/SMPLH_NEUTRAL.pkl \
     /models/locomotion_assets/ACCAD \
-    /models/gvhmr/body_models/smplx/SMPLX_NEUTRAL.pkl; do
+    /models/gvhmr/body_models/smplx/SMPLX_NEUTRAL.pkl \
+    "$ROOT/GMR-master/assets/unitree_g1/meshes/left_knee_link.STL" \
+    "$ROOT/phc-dev-felix-pipeline/sample_data/amass_isaac_gender_betas_unique.pkl"; do
     test -e "$required" || { echo "missing mounted model/runtime asset: $required" >&2; exit 3; }
   done
   echo "model mounts: ok"

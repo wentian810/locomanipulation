@@ -507,6 +507,15 @@ def build_unitree_sharpa_visual_xml(
     root = tree.getroot()
     strip_native_g1_hand_visuals(root)
     ensure_sharpa_assets(root, sharpa_root, scale)
+    # The release runner intentionally mounts the robot assets read-only.  The
+    # generated XML may therefore live in /tmp, but MuJoCo must still resolve
+    # the original relative meshdir against the immutable asset tree.
+    compiler = root.find("compiler")
+    if compiler is not None and compiler.get("meshdir"):
+        compiler.set(
+            "meshdir",
+            str((base_xml.parent / compiler.get("meshdir")).resolve()),
+        )
 
     for side in ("left", "right"):
         side_tree = ET.parse(sharpa_root / f"{side}.xml")
@@ -539,10 +548,11 @@ def build_unitree_sharpa_visual_xml(
 
     remove_render_only_keyframes(root)
 
+    runtime_tmpdir = os.environ.get("GMR_RUNTIME_TMPDIR", "").strip() or None
     tmp = tempfile.NamedTemporaryFile(
         prefix="h1_sharpa_visual_",
         suffix=".xml",
-        dir=str(base_xml.parent),
+        dir=runtime_tmpdir,
         delete=False,
     )
     tmp.close()

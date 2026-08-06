@@ -21,6 +21,8 @@ IMAGE_NAME="locomotion-human-only:20260806"
 DOCKER_SUDO="${DOCKER_SUDO:-0}"
 WITH_IMAGE=1
 WITH_MODELS=1
+WITH_GMR_ASSETS=1
+WITH_PHC_SAMPLE_DATA=1
 WITH_DATASET=1
 WITH_SOURCE_ARCHIVE=0
 DOWNLOAD_ONLY=0
@@ -48,6 +50,8 @@ Options:
   --docker-sudo           Run Docker through non-interactive sudo -n docker
   --no-image              Do not download/load the Docker image archive
   --no-models             Do not download/extract the model asset archive
+  --no-gmr-assets         Do not download/extract the GMR Unitree G1 assets
+  --no-phc-sample-data    Do not download/extract PHC sample-data runtime files
   --no-dataset            Do not download/extract the example input videos
   --with-source-archive   Also fetch/checksum the archival source snapshot (not runnable)
   --download-only         Fetch and verify only; do not extract or docker load
@@ -92,6 +96,8 @@ while [[ $# -gt 0 ]]; do
     --docker-sudo) DOCKER_SUDO=1; shift ;;
     --no-image) WITH_IMAGE=0; shift ;;
     --no-models) WITH_MODELS=0; shift ;;
+    --no-gmr-assets) WITH_GMR_ASSETS=0; shift ;;
+    --no-phc-sample-data) WITH_PHC_SAMPLE_DATA=0; shift ;;
     --no-dataset) WITH_DATASET=0; shift ;;
     --with-source-archive) WITH_SOURCE_ARCHIVE=1; shift ;;
     --download-only) DOWNLOAD_ONLY=1; shift ;;
@@ -128,6 +134,8 @@ source_name="human-pipeline-support-contacts_${RELEASE}.tar.zst"
 dataset_name="dataset_new6_${RELEASE}.tar.zst"
 image_name="locomotion-human-only_${RELEASE}.docker.tar.zst"
 model_name="human-only-model-assets_${RELEASE}.tar.zst"
+gmr_asset_name="human-only-gmr-unitree-g1-assets_${RELEASE}.tar.zst"
+phc_sample_data_name="human-only-phc-sample-data_${RELEASE}.tar.zst"
 manifest="$ARTIFACT_DIR/SHA256SUMS"
 
 fetch_manifest() {
@@ -202,6 +210,8 @@ write_paths_file() {
     printf 'RELEASE_ID=%q\n' "$RELEASE"
     printf 'RELEASE_ROOT=%q\n' "$DOWNLOAD_ROOT"
     printf 'MODEL_ROOT=%q\n' "$DOWNLOAD_ROOT/extracted/model-assets"
+    printf 'GMR_UNITREE_G1_DIR=%q\n' "$DOWNLOAD_ROOT/extracted/gmr-unitree-g1-assets/GMR-master/assets/unitree_g1"
+    printf 'PHC_SAMPLE_DATA_DIR=%q\n' "$DOWNLOAD_ROOT/extracted/phc-sample-data/phc-dev-felix-pipeline/sample_data"
     printf 'DATA_ROOT=%q\n' "$DOWNLOAD_ROOT/extracted/dataset"
     printf 'DATASET_DIR=%q\n' "$DOWNLOAD_ROOT/extracted/dataset/dataset_new6"
     printf 'IMAGE_ARCHIVE=%q\n' "$ARTIFACT_DIR/$image_name"
@@ -213,7 +223,7 @@ write_paths_file() {
 fetch_manifest
 [[ -f "$manifest" ]] || die "Missing manifest. Run without --verify-only once."
 
-for required in "$source_name" "$dataset_name" "$image_name" "$model_name"; do
+for required in "$source_name" "$dataset_name" "$image_name" "$model_name" "$gmr_asset_name" "$phc_sample_data_name"; do
   [[ -n "$(expected_sha "$required")" ]] || die "Manifest does not describe required release artifact: $required"
 done
 
@@ -221,11 +231,21 @@ done
 [[ "$WITH_DATASET" -eq 0 ]] || fetch_file "$dataset_name"
 [[ "$WITH_IMAGE" -eq 0 ]] || fetch_file "$image_name"
 [[ "$WITH_MODELS" -eq 0 ]] || fetch_file "$model_name"
+[[ "$WITH_GMR_ASSETS" -eq 0 ]] || fetch_file "$gmr_asset_name"
+[[ "$WITH_PHC_SAMPLE_DATA" -eq 0 ]] || fetch_file "$phc_sample_data_name"
 
 if [[ "$DOWNLOAD_ONLY" -eq 0 && "$VERIFY_ONLY" -eq 0 ]]; then
   if [[ "$WITH_MODELS" -eq 1 ]]; then
     extract_archive "$model_name" "$DOWNLOAD_ROOT/extracted/model-assets" \
       "GVHMR-hand/GVHMR-main/inputs/checkpoints/gvhmr/gvhmr_siga24_release.ckpt"
+  fi
+  if [[ "$WITH_GMR_ASSETS" -eq 1 ]]; then
+    extract_archive "$gmr_asset_name" "$DOWNLOAD_ROOT/extracted/gmr-unitree-g1-assets" \
+      "GMR-master/assets/unitree_g1/meshes/left_knee_link.STL"
+  fi
+  if [[ "$WITH_PHC_SAMPLE_DATA" -eq 1 ]]; then
+    extract_archive "$phc_sample_data_name" "$DOWNLOAD_ROOT/extracted/phc-sample-data" \
+      "phc-dev-felix-pipeline/sample_data/amass_isaac_gender_betas_unique.pkl"
   fi
   if [[ "$WITH_DATASET" -eq 1 ]]; then
     extract_archive "$dataset_name" "$DOWNLOAD_ROOT/extracted/dataset" "dataset_new6"
@@ -242,6 +262,6 @@ if [[ "$DOWNLOAD_ONLY" -eq 0 && "$VERIFY_ONLY" -eq 0 ]]; then
 fi
 
 note "SUCCESS: artifacts were downloaded and verified."
-if [[ "$DOWNLOAD_ONLY" -eq 0 && "$VERIFY_ONLY" -eq 0 && "$WITH_IMAGE" -eq 1 && "$WITH_MODELS" -eq 1 && "$WITH_DATASET" -eq 1 ]]; then
+if [[ "$DOWNLOAD_ONLY" -eq 0 && "$VERIFY_ONLY" -eq 0 && "$WITH_IMAGE" -eq 1 && "$WITH_MODELS" -eq 1 && "$WITH_GMR_ASSETS" -eq 1 && "$WITH_PHC_SAMPLE_DATA" -eq 1 && "$WITH_DATASET" -eq 1 ]]; then
   note "Next: bash release/run_human_only_docker.sh --release-root '$DOWNLOAD_ROOT' --check-only"
 fi
