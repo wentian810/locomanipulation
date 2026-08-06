@@ -8,89 +8,84 @@
 
 ~~~text
 <asset>/<clip>/
-  human_motion.npz
-  human_phc_motion.npz      # 可选
-  robot_motion.npz
-  robot_hand_motion.npz     # Sharpa 模式下通常存在
-  camera.npz
+  motion.npz                # 必需：human__/robot__/sharpa__/camera__ 命名空间
   quality_report.json
   final_motion_selection.json
   preview_2x2.mp4
   manifest.json
   pipeline_config.yaml
-  rights.json
   checksums.sha256
 ~~~
 
 所有 NPZ 必须能以 numpy.load(..., allow_pickle=False) 读取，禁止 dtype=object，数值字段不得包含 NaN 或 Inf。
 
-## 人体动作协议
+## 单一 motion.npz 与人体命名空间
 
-human_motion.npz 是人体和 MANO 的主接口：
+当前导出器只写一个 `motion.npz`，而不是多个 human/robot/camera 文件。顶层 `schema_version`、`format` 与 `components` 描述容器；`components` 必须为 `[human, robot, sharpa, camera]`（顺序不构成语义）。人体和 MANO 字段统一以 `human__` 开头：
 
 | 字段 | shape | 坐标/单位 | 说明 |
 |---|---:|---|---|
-| schema_version | scalar | int | 当前导出 schema |
-| fps / frame_count | scalar | 30 / T | 全部时间数组的基准 |
-| coordinate_system | scalar string | gvhmr_world_gravity_negative_y | 世界重力为 -Y |
-| rotation_representation | scalar string | axis_angle_radians | 旋转表示 |
-| units | scalar string | meter_radian | 位置和角度单位 |
-| source_body_stage | scalar string | smoothed、phc 等 | 导出的身体来源 |
-| root_orient_axis_angle | (T,3) | 弧度 | 人体根朝向 |
-| body_pose_axis_angle | (T,63) | 弧度 | 21 个身体关节 |
-| translation | (T,3) | 米 | GVHMR 世界根位置 |
-| betas | (B,) | 无量纲 | SMPL-H shape |
-| gender | scalar string | 通常 neutral | 模型元数据 |
-| left/right_hand_pose_axis_angle | (T,45) | 弧度 | 每只手 15 个 MANO 指关节 |
-| left/right_hand_valid | (T,) | bool | 最终手部轨迹可用性 |
-| hand_backend | scalar string | hand4wholepp | 手部来源 |
+| `human__schema_version` | scalar | int | human component schema |
+| `human__fps` / `human__frame_count` | scalar | 30 / T | 全部人体时间数组的基准 |
+| `human__coordinate_system` | scalar string | `gvhmr_world_gravity_negative_y` | 世界重力为 -Y |
+| `human__rotation_representation` | scalar string | `axis_angle_radians` | 旋转表示 |
+| `human__units` | scalar string | `meter_radian` | 位置和角度单位 |
+| `human__source_body_stage` | scalar string | smoothed、phc 等 | 本次导出的身体来源 |
+| `human__root_orient_axis_angle` | (T,3) | 弧度 | 人体根朝向 |
+| `human__body_pose_axis_angle` | (T,63) | 弧度 | 21 个身体关节 |
+| `human__translation` | (T,3) | 米 | GVHMR 世界根位置 |
+| `human__betas` | (B,) | 无量纲 | SMPL-H shape |
+| `human__gender` | scalar string | 通常 neutral | 模型元数据 |
+| `human__left/right_hand_pose_axis_angle` | (T,45) | 弧度 | 每只手 15 个 MANO 指关节 |
+| `human__left/right_hand_valid` | (T,) | bool | 最终手部轨迹可用性 |
+| `human__hand_backend` | scalar string | hand4wholepp | 手部来源 |
 
 可选的质量字段包括 left/right_hand_quality、source_reliable、source_repaired、bad_mask、spike_mask、bbox_xyxy 与 reproj_error。可选字段不存在时，消费者应保守降级；不能伪造为全有效。
 
-human_phc_motion.npz 如果存在，身体字段与 human_motion 相同，但 source_body_stage 为 phc_smoothed 或等价 PHC 阶段，并不重复保存 MANO 手部。
+PHC 不是单独的 `human_phc_motion.npz`。成功时 `human__source_body_stage` 必须与 `final_motion_selection.json.selected_stage` 一致，例如 `phc_smoothed_grounded`；若为 `smoothed`，接收方必须把它视为 PHC 回退并读取质量报告的 warning。
 
-## 机器人与 Sharpa 协议
+## robot__/sharpa__ 命名空间
 
-robot_motion.npz：
+`motion.npz` 中的机器人字段：
 
 | 字段 | shape | 坐标/单位 |
 |---|---:|---|
-| root_position | (T,3) | MuJoCo world，Z-up，米 |
-| root_quat_xyzw | (T,4) | 单位四元数，xyzw |
-| dof_position | (T,D) | 弧度 |
-| dof_names | (D,) | 与 dof_position 列严格一一对应 |
-| embodiment | scalar string | 如 unitree_g1 |
-| fps / frame_count | scalar | 应与人体一致 |
+| `robot__root_position` | (T,3) | MuJoCo world，Z-up，米 |
+| `robot__root_quat_xyzw` | (T,4) | 单位四元数，xyzw |
+| `robot__dof_position` | (T,D) | 弧度 |
+| `robot__dof_names` | (D,) | 与 dof_position 列严格一一对应 |
+| `robot__embodiment` | scalar string | 如 unitree_g1 |
+| `robot__fps` / `robot__frame_count` | scalar | 应与人体一致 |
 
-robot_hand_motion.npz：
+`motion.npz` 中的 Sharpa 字段：
 
 | 字段 | shape | 说明 |
 |---|---:|---|
-| left_qpos / right_qpos | (T,22) | Sharpa 两只手的 22-DoF 关节角 |
-| left_qpos_names / right_qpos_names | (22,) | 对应关节列名 |
-| left_valid / right_valid | (T,) | 源 MANO 手的有效性 |
-| left_reliability / right_reliability | (T,) 可选 | 软可靠度 |
-| embodiment | scalar string | sharpa_dual_hand |
+| `sharpa__left_qpos` / `sharpa__right_qpos` | (T,22) | Sharpa 两只手的 22-DoF 关节角 |
+| `sharpa__left_qpos_names` / `sharpa__right_qpos_names` | (22,) | 对应关节列名 |
+| `sharpa__left_valid` / `sharpa__right_valid` | (T,) | 源 MANO 手的有效性 |
+| `sharpa__left_reliability` / `sharpa__right_reliability` | (T,) | 软可靠度 |
+| `sharpa__embodiment` | scalar string | sharpa_dual_hand |
 
 机器人根四元数使用 xyzw。不得与物体或其他系统常见的 wxyz 顺序混用。
 
-## 相机协议
+## camera__ 命名空间
 
-camera.npz 保留 GVHMR 世界、OpenCV 相机和渲染世界的关系：
+`motion.npz` 的 camera namespace 保留 GVHMR 世界、OpenCV 相机和渲染世界的关系：
 
 | 字段 | shape | 说明 |
 |---|---:|---|
-| world_coordinate_system | scalar string | gvhmr_world_gravity_negative_y |
-| render_coordinate_system | scalar string | mujoco_world_z_up |
-| camera_convention | scalar string | opencv_x_right_y_down_z_forward |
-| camera_pos_world / camera_target_world | (T,3) | GVHMR 世界相机位置与目标 |
-| camera_pos_isaac / camera_target_isaac | (T,3) | Z-up 渲染相关副本 |
-| subject_world / subject_isaac | (T,3) | 人体参考点 |
-| T_w2c | (T,4,4) | 世界到相机外参 |
-| K_fullimg | (T,3,3) | OpenCV 内参 |
-| world_to_isaac | (3,3) | 坐标轴转换 |
-| alignment_offset_world | (3,) | Locomotion 对齐偏移 |
-| gravity_axis | scalar string | neg_y |
+| `camera__world_coordinate_system` | scalar string | gvhmr_world_gravity_negative_y |
+| `camera__render_coordinate_system` | scalar string | mujoco_world_z_up |
+| `camera__camera_convention` | scalar string | opencv_x_right_y_down_z_forward |
+| `camera__camera_pos_world` / `camera__camera_target_world` | (T,3) | GVHMR 世界相机位置与目标 |
+| `camera__camera_pos_isaac` / `camera__camera_target_isaac` | (T,3) | Z-up 渲染相关副本 |
+| `camera__subject_world` / `camera__subject_isaac` | (T,3) | 人体参考点 |
+| `camera__T_w2c` | (T,4,4) | 世界到相机外参 |
+| `camera__K_fullimg` | (T,3,3) | OpenCV 内参 |
+| `camera__world_to_isaac` | (3,3) | 坐标轴转换 |
+| `camera__alignment_offset_world` | (3,) | Locomotion 对齐偏移 |
+| `camera__gravity_axis` | scalar string | neg_y |
 
 不能将 human_motion.translation 直接当成 MuJoCo root_position。人体、相机、机器人有明确不同坐标契约，任何转换都应在消费者自己的适配层完成并写入版本记录。
 

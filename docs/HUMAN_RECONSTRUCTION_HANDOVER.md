@@ -37,16 +37,12 @@ human-only 交付的工作区与资产包分别保留。<out> 是 output.root，
   hamer_diagnostics/         # 手部诊断视频与 JSON；启用 diagnostics 时生成
 
 <asset>/<clip>/
-  human_motion.npz          # 对外安全人体 + MANO 运动接口
-  human_phc_motion.npz      # 可选：PHC 修复的身体轨迹
-  robot_motion.npz          # 对外安全 GMR 机器人运动接口
-  robot_hand_motion.npz     # Sharpa 22-DoF 手部接口
-  camera.npz                # 相机与坐标元数据
+  motion.npz                # 对外交付的单一安全 NPZ；human__/robot__/sharpa__/camera__ 命名空间
   quality_report.json       # pass/warn/fail 和指标细节
+  final_motion_selection.json # 本次实际选择的身体阶段和回退原因
   preview_2x2.mp4           # 审核预览
   manifest.json
   pipeline_config.yaml
-  rights.json
   checksums.sha256
 ~~~
 
@@ -55,6 +51,24 @@ human-only 交付的工作区与资产包分别保留。<out> 是 output.root，
 ## 2. 面向对接方的最快启动方式
 
 当前实际 human-only 全流程配置是 [human_sharpa.yaml](../configs/pipelines/human_sharpa.yaml)：它关闭 object，但保留 PHC、GMR/Sharpa、质量和产品导出。对接交付应以它为默认入口。
+
+对接方应优先使用发布脚本，而不是自行激活 Conda 或拼 Docker `-v` 参数。发布脚本会校验 S3 归档的 SHA-256，挂载模型、PHC sample-data、Unitree G1 网格，并把产品导出固定到宿主输出目录。它也是唯一被验证过的“Git 源码 + S3 运行时物料”组合。
+
+~~~bash
+# 首次：从 US3 下载/校验/解压运行时物料并导入镜像。
+bash release/bootstrap_from_ucloud.sh --us3-config locomotion-download
+
+# 不推理的强制门禁：GPU、两个 Conda 环境、PHC/Isaac、所有模型挂载和测试。
+bash release/run_human_only_docker.sh --check-only
+
+# 单条实际推理；结果、日志和 product/ 均写在宿主目录。
+bash release/run_human_only_docker.sh \
+  --output-root /data/human_output \
+  --work-root /data/human_work \
+  --clip-filter <clip>
+~~~
+
+若主机只能通过 `sudo -n docker` 访问 daemon，上述 Docker 命令追加 `--docker-sudo`。接收方不需要、也不应在宿主机复制服务器的两个 Conda 环境。
 
 ~~~bash
 cd /path/to/Loco-manipulation-human-pipeline-support-contacts
@@ -84,7 +98,7 @@ Docker 镜像的 run/human 入口默认使用 human_sharpa.yaml 并执行 --stag
 
 若需要只验证原视频到 SMPL-H/MANO 的前半段、故意不启动 PHC/GMR，才使用 [human_reconstruction.yaml](../configs/pipelines/human_reconstruction.yaml) 加 --stage human。它是上游调试配置，不是 human-only 完整交付配置。
 
-## 3. 配置优先级与运行边界
+## 3. 参数如何读取、如何覆盖
 
 配置优先级为：
 
@@ -92,7 +106,17 @@ Docker 镜像的 run/human 入口默认使用 human_sharpa.yaml 并执行 --stag
 CLI 参数与 --set  > 进程环境变量 > pipeline YAML > configs/default.yaml
 ~~~
 
-对接时优先使用 --dataset-dir、--output-root、--clip-filter 和少量 --set 覆盖；不要复制并手改底层 Bash 命令。--print-config 会打印合并后的有效配置，可用于将一次交付的实际参数写入工单。
+对接时优先使用 --dataset-dir、--output-root、--clip-filter 和少量 --set 覆盖；不要复制并手改底层 Bash 命令。--print-config 会打印合并后的有效配置，可用于将一次交付的实际参数写入工单。各模块文档的“参数速查”只列出对结果或资源占用有影响的参数；全部 CLI 参数、内部/公开边界与示例在 [CLI_REFERENCE.md](CLI_REFERENCE.md)。
+
+最常见的安全覆盖如下：
+
+| 目的 | 推荐覆盖 | 不能做什么 |
+|---|---|---|
+| 选输入 | `--dataset-dir`、`--clip-filter`、`input.max_videos` | 不要把多人视频直接送入 `report` 模式后对外交付 |
+| 放结果 | `--output-root`、`input.work_video.directory` | `product.root` 必须不同于 output root；发布脚本已固定为 `<out>/product` |
+| 只做环境验收 | `--check-only`（发布脚本）或 Python 入口的 `--check` | `--check` 不等于模型推理成功 |
+| 重新计算某一环节 | `resume.force_*` | 不要手删单个缓存文件破坏指纹链 |
+| 显存受限 | 保持 `hand_batch_size=1`、`low_memory=true` | 不要并发启动多个完整 human 流程 |
 
 每个原视频必须只含一个主要人物。工程在推理前使用 YOLO-Pose 抽样检查头、双腕、双踝、人物尺度和竞争人物；不满足条件的 clip 会写入报告并在 mode: gate 下跳过，属于输入不合格而非模型运行失败。
 
@@ -131,4 +155,4 @@ CLI 参数与 --set  > 进程环境变量 > pipeline YAML > configs/default.yaml
 4. 审看 1_incam.mp4、PHC/Isaac、GMR 与 2×2 视频；重点检查腕部翻转、手指突跳、物理落地和机器人 IK。
 5. 运行 --stage quality 与 --stage product，交付资产包、原始输入文件名/哈希、有效 YAML、软件版本和验收结果。
 
-接收方不应从视频渲染效果单独判断数据正确性。应以资产包内的 human_motion.npz、robot_motion.npz、robot_hand_motion.npz 和 camera.npz 的帧对齐、坐标约定和有效性字段为机器接口，以 preview_2x2.mp4 作为人工审核证据。
+接收方不应从视频渲染效果单独判断数据正确性。应以资产包内 `motion.npz` 的 human__/robot__/sharpa__/camera__ 命名空间字段、帧对齐、坐标约定和有效性字段为机器接口，以 preview_2x2.mp4 作为人工审核证据。

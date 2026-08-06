@@ -41,6 +41,19 @@ human.gvhmr_batch_size 控制 GVHMR 主体 batch；human.low_memory 和 human.is
 
 脚本会为输入、手部代码和过滤配置写缓存指纹。resume.skip_existing: true 时，仅在视频、模型配置和结果一致时复用已有内容；改变手部过滤配置会使相关转换/渲染重算。常规重跑不需要先删除输出目录。
 
+## 参数速查
+
+| 参数 | 默认值 | 含义与调整边界 |
+|---|---:|---|
+| `human.backend` | hand4wholepp | 选择手部包装路径；完整交付固定为 hand4wholepp，不能在同一输出根混用后端 |
+| `human.gvhmr_batch_size` | 4 | GVHMR 主体 batch；增大可提速但会提高显存峰值 |
+| `human.vitpose_image_scale` | 1.0 | ViTPose 输入尺度；改变会影响关键点与手部证据，须从模块 02 起重跑 |
+| `human.low_memory` | true | 分阶段释放/控制峰值显存；低显存 GPU 必须保留 true |
+| `human.isolate_hand_process` | true | 让手部前处理与主体推理隔离；避免长期并存的 CUDA 内存 |
+| `resume.skip_existing` | true | 仅当缓存指纹和输入一致时复用；生产默认值 |
+| `resume.force_hand_preprocess` | false | 使相关 GVHMR/手部前处理重建；用于模型或过滤配置变更 |
+| `--dry-run` | false | 只展开最终调用命令；用于交接排障，不验证模型数值 |
+
 ## 启动和诊断
 
 常规运行由总入口触发：

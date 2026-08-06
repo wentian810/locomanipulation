@@ -63,6 +63,22 @@ GVHMR 的人物轨迹和全身关键点
 
 约束 profile 为 conservative。它是针对手指角度与形态的保护性约束，而不是“真实手势”保证。若进行 A/B 试验，必须保存 profile、模型 snapshot 和有效配置，且禁止覆盖交付目录。
 
+### 可见手细化与过滤参数
+
+| 参数组 | 当前生产值/默认值 | 作用与限制 |
+|---|---|---|
+| `filters.temporal/fingers` | true/true | 时序与手指局部平滑；`wrist_mode` 保持 smooth，不能用它推断掌心语义 |
+| `filters.global_orient_fill_mode` | interpolate | 仅补连续性；preserve 用于 A/B，不可把空洞当观测 |
+| `visible_hand_refine.device/batch_size` | auto/16 | 细化设备和 batch；仅影响可见手细化阶段 |
+| `steps/lr/prior_weight` | 8/0.02/0.02 | 2D 细化的步数、学习率、先验；改动必须保留前后诊断 |
+| `fit_confidence/min_keypoints` | 0.60/12 | 足够 2D 证据才拟合；低于门限时应跳过而非强行修手 |
+| `fit_partition` | non_tip | 用非指尖拟合，指尖留作验证；all 仅兼容旧实验 |
+| `holdout_min_keypoints/max_relative_regression_px` | 3/0.0 | 至少可验证点数和允许的留出指尖回退；生产不允许回退 |
+| `max_delta_degrees` | 25 | 单次细化允许的最大角度变化，防止观测噪声拉飞手势 |
+| `min_relative_improvement/min_relative_improvement_px` | 0.25/2.0 | 接受细化所需的最小改善 |
+| `max_absolute_regression_px/max_anchor_error_*` | 2.0/20 px/0.25 bbox | 保护身体-手腕连接，超过即拒绝细化候选 |
+| `evidence_*` | 见 default.yaml | 低置信度、过小手框、过短连续段均不应触发细化 |
+
 ## 启动方式
 
 正常情况下不单独启动手部模块，它由人体总入口作为同一条视频的后续阶段运行：

@@ -24,6 +24,7 @@ gmr:
 | PHC 代码与 Isaac Gym | phc-dev-felix-pipeline | Docker 镜像/服务器运行时提供 |
 | PHC 策略权重 | PHC output 下的 Humanoid.pth | primitive 与 composer 两个策略 |
 | SMPL 模型 | PHC data/smpl | 用于地面修复 |
+| PHC sample-data | `phc-dev-felix-pipeline/sample_data/` | AMASS 性别/形状与站立样本；发布时来自 S3 的 `human-only-phc-sample-data_20260806.tar.zst` |
 | Python 环境 | Conda phc | Python 3.8 + Isaac Gym；不同于 locomotion 环境 |
 
 底层包装函数会为 PHC 注入独立的 LD_LIBRARY_PATH、PYTHONPATH、ISAACGYM_PATH 和 phc Conda bin 路径。不要在 locomotion 环境中直接 import Isaac Gym，也不要用 phc 环境执行 GVHMR 或 GMR。
@@ -107,6 +108,7 @@ PYTHONUNBUFFERED=1 /opt/conda/envs/locomotion/bin/python \
 | 现象 | 原因边界 | 处理与交接结论 |
 |---|---|---|
 | 找不到 phc Python 或 Isaac binding | 环境/镜像不完整 | 运行 Docker preflight；不能用 locomotion Python 顶替 |
+| 找不到 `sample_data/amass_isaac_gender_betas_unique.pkl` | PHC sample-data 运行时包未下载或未挂载 | 重新执行 bootstrap；不得接受 smoothed fallback 作为 PHC 成功 |
 | PHC 进程失败 | 驱动、策略、序列稳定性或 Isaac 环境 | 保留 phc 日志和工作区；final 会安全回退，质量报告将标记原因 |
 | 没有 repaired NPZ | PHC 未产生可用结果 | 记录 phc_no_output 回退，禁止把旧 phc 文件作为本次输出 |
 | 后平滑失败 | 数值/依赖异常 | 可保留 grounded 原结果，但交付状态至少为 warn |

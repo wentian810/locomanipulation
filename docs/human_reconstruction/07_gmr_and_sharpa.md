@@ -27,7 +27,27 @@ gmr:
 | GMR robot XML/mesh | Unitree G1 body 与 Sharpa 外置手的运动学/渲染资产 |
 | SMPL-X body model | 将人体动作与 GMR 的 IK 目标关联 |
 
+发布运行时还必须具有 Unitree G1 网格包 `human-only-gmr-unitree-g1-assets_20260806.tar.zst`。它由 bootstrap 解压、由 release runner 只读挂载到 `GMR-master/assets/unitree_g1/`；其中缺少任意 STL 都可能让重定向成功但 MuJoCo 视频渲染失败。不要把网格提交到 Git 或让 GMR 在运行时改写资产目录；渲染临时 XML 写入容器 `/tmp`。
+
 GMR source 是数据语义，不是渲染选项。当前 source=final，代表使用 PHC 成功时的 grounded 身体，或当前运行明示的 smoothed 回退。改成 smoothed、converted 或 phc_smoothed 后，必须重跑 GMR、质量和产品导出，并在资产的 source_body_stage 中反映变化。
+
+## 参数速查
+
+| 参数 | 当前默认/生产值 | 作用与变更后果 |
+|---|---:|---|
+| `gmr.enabled` | true | 是否产生机器人重定向；false 时 human-only 只交付人体，不可要求 robot component |
+| `gmr.hand_model` | sharpa | Unitree G1 身体 + 外置 Sharpa；改为 g1/brainco 会改变机器人接口 schema |
+| `gmr.source` | final | 读取 final selection；改动会改变人体来源，必须全量重新验收 |
+| `gmr.target_fps` | 30 | 机器人目标频率；必须与输入重采样、质量门限同步考虑 |
+| `height_adjust_mode` | support_aware_foot_geom | 支撑段地面高度策略；不是 PHC 的替代品 |
+| `support_contact_height` | 0.08 m | 足底候选接触高度 |
+| `support_max_vertical_speed` | 1.20 m/s | 快速上/下运动脚不视为支撑 |
+| `support_min_contact_run/max_contact_gap` | 3/1 帧 | 支撑连续性和允许的小缺口 |
+| `support_root_step_limit` | 0.03 m/frame | 支撑切换的 root 过渡限制；0 表示关闭 |
+| `human_yaw_offset_deg` | 0.0 | 人体到机器人全局偏航；改动必须同步重渲染/重导出 |
+| `camera_source` | gvhmr | GMR/Isaac 审核相机来源；需与 camera sidecar 同版 |
+| `render/composite_2x2` | true/true | 是否输出 GMR 与四路审核视频；产品设置 require_preview 时不得关闭 |
+| `mujoco_gl/render_width/render_height` | egl/960/720 | Headless 后端与渲染尺寸；仅影响审核视频，不改变数值 IK |
 
 ## 工作流
 
@@ -91,7 +111,7 @@ PYTHONUNBUFFERED=1 /opt/conda/envs/locomotion/bin/python \
     <clip-slug>__2x2.mp4
 ~~~
 
-robot_motion.pkl 是可信工作文件，可能包含 Python pickle，禁止直接对外发放。资产导出器会将其转换为 allow_pickle=False 的 robot_motion.npz。001_sharpa_chain_hands.npz 是数值工作文件，导出时变为 robot_hand_motion.npz。
+robot_motion.pkl 是可信工作文件，可能包含 Python pickle，禁止直接对外发放。资产导出器会将机器人与 Sharpa 字段写入 `motion.npz` 的 `robot__*` 与 `sharpa__*` 命名空间；所有最终 NPZ 均可用 `allow_pickle=False` 打开。001_sharpa_chain_hands.npz 仍是工作区数值文件，不是对外接口。
 
 ## 机器人与手部数据语义
 

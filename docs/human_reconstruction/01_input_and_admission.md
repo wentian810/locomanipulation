@@ -85,6 +85,24 @@ JSONL/CSV 记录至少包含源文件、可解码状态、是否 eligible、拒�
 
 这些值是准入下限而不是质量承诺。通过门禁也可能在严重运动模糊、手很小或自遮挡时得到低可信度手部；这会在第 03、06 模块暴露。
 
+### 参数速查
+
+| 参数 | 默认值 | 作用与交接规则 |
+|---|---:|---|
+| `input.extensions` | mp4/avi/mov/mkv/m4v | 允许枚举的源文件后缀；新增后缀前先验证 FFmpeg/OpenCV 可解码 |
+| `input.clip_filter` | 空 | 文件名子串筛选；逗号可分隔多个子串 |
+| `input.min_duration_seconds` | 8.0 | 转码前的最短时长；缩短会降低时序证据 |
+| `input.max_videos` | null | 最多处理的已排序 clip 数；用于小规模试跑 |
+| `fullbody_preflight.enabled/mode` | true/gate | gate 拒绝不合格输入；report 只用于数据盘点 |
+| `device/image_size/samples` | auto/640/32 | YOLO 设备、推理尺度与时间抽样数；samples 增大更稳但更慢 |
+| `person_confidence/keypoint_confidence` | 0.25/0.35 | 检测与关键点最低置信度；不要为了让坏视频通过而降低 |
+| `min_*_ratio` | 见上节 | 主人、尺度、头、双腕、双踝、全身的时间比例门限 |
+| `max_competing_person_ratio` | 0.0 | 默认任何达到竞争尺度的第二人都会拒绝 |
+| `min_competing_person_scale_ratio` | 0.15 | 认定竞争人物相对主人框的最小尺度 |
+| `work_video.enabled/directory` | true/`dataset_new6_work_1280` | 是否生成、存放规范化视频；目录必须可写且不与原视频目录混用 |
+| `width/height/crf/fps` | 1280/960/18/30 | 最大画幅、H.264 质量和固定 FPS；任一改变会失效缓存并影响下游帧数 |
+| `work_video.force` | false | true 时无条件重转码；仅源视频或转码参数已改变时使用 |
+
 ## 常见问题与处理边界
 
 | 现象 | 首先检查 | 正确处理 |

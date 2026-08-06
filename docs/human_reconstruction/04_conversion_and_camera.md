@@ -64,6 +64,23 @@ $PY_LOCO $ROOT/GVHMR-hand/GVHMR-main/tools/pipeline/export_gvhmr_camera.py \
   --person_idx 0
 ~~~
 
+### 转换/相机参数速查
+
+| 参数 | 当前值 | 作用与禁止事项 |
+|---|---:|---|
+| `--gvhmr_results` | 当前 clip 的 `hmr4d_results.pt` | 只接受模块 02 同一 clip 的结果 |
+| `--mano_params` | 当前最终 MANO 文件 | 必须与本次过滤链一致，不能任取最早 `mano_params.pt` |
+| `--output/--smplx_output` | 001_converted / 001_smplx_hands | 两者必须在同一 `<clip>` 目录并成对更新 |
+| `--fps` | 30 | 下游帧率契约；改动需要重采样全链路 |
+| `--person_idx` | 0 | 当前只支持单人主体；不应用于多人视频 |
+| `--space` | global | 输出 GVHMR 世界空间；不能和 Isaac/MuJoCo 坐标混用 |
+| `--hand_backend` | hand4wholepp | 写入 sidecar 溯源字段；必须和 human.backend 一致 |
+| `--hand_refine_mode` | raw | 当前最终 MANO 的细化标签；用于诊断溯源而非重新细化 |
+| `--hand_reproj_error_thr/ratio_thr` | 75/0.45 | 标记异常手部证据的阈值；不应放宽来掩盖坏手 |
+| `--hand_wrist_offset_mode` | temporal | 手腕偏移时序模式；改动需要重新检查身体-手连接 |
+| 相机 `--reference_npz` | 001_smoothed.npz | 定义与 Locomotion 对齐的相机参考；不得跨 clip 使用 |
+| `--gravity_axis` | neg_y | 写入相机坐标契约；必须和 Locomotion 的 y- 对应 |
+
 ## 输出文件 1：身体 NPZ
 
 001_converted.npz 的稳定核心字段如下。转换器同时会写 poses、global_orient、transl、trans_original 等兼容别名，但新的对接代码应优先使用表中字段。

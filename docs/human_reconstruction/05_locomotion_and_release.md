@@ -32,6 +32,19 @@ smooth_motion.py 不对 axis-angle 逐分量硬滤。它会：
 
 正常人体链调用的保护参数为 pose window 11、translation window 15、根加速度阈值 10.0、关节加速度阈值 300.0。窗口并非越大越好；过大将抹掉快速肢体动作。若修改它们，必须作为独立版本重新验收。
 
+## 参数速查
+
+| 参数 | 默认/当前值 | 作用与调整边界 |
+|---|---:|---|
+| `locomotion.enabled` | true | 是否执行高度优化；正式 PHC/GMR 链必须保留 |
+| `locomotion.smooth_window` | 9 | 入口级平滑窗口；内部 pose/trans 窗口仍受脚本保护逻辑约束 |
+| `resume.force_locomotion` | false | 强制重做优化器；输入、SMPL-H 资产或优化参数变更时才用 |
+| `resume.force_smoothing` | false | 强制重做后处理平滑；滤波参数变更时使用 |
+| `--optim_height` | 1 | 固定启用人体高度优化；不要在交付时关闭后仍声称已做落地处理 |
+| `--gravity_axis` | `y-` | GVHMR world 的重力方向；与后续 camera/PHC 契约必须一致 |
+| `pose_window/trans_window` | 11/15 | 四元数姿态与平移 Savitzky-Golay 窗口；必须为合法奇数且小于序列长度 |
+| `acc_threshold/joint_acc_threshold` | 10.0/300.0 | 根/关节异常帧判别门限；只用于异常修复，不等同于质量分数 |
+
 ## 启动方式
 
 总入口会自动运行本模块：

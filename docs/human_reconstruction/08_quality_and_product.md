@@ -18,7 +18,28 @@ product:
   object_policy: exclude
 ~~~
 
+上面的 `root` 是直接以 Python 入口开发调试时的 YAML 默认值。发布启动器会额外传入 `--set product.root=/data/output/product`，因此接收方实际拿到的资产在 `<output-root>/product/<clip>/`，不会留在容器临时文件系统。`product.root` 必须与 `output.root` 不同，但可以是 output root 的子目录。
+
 严格保证 object.enabled=false，因此不会读取、导出或等待任何场景/物体资产。
+
+## 参数速查
+
+| 参数 | 默认/生产值 | 作用与交接规则 |
+|---|---:|---|
+| `quality_evaluation.enabled` | true | 生成质量报告；产品交付不可关闭 |
+| `run_after_stages` | human/object/all | 哪些 stage 后自动评估；human-only 实际由 human/all 触发 |
+| `require_for_product` | true | 没有当前质量报告时拒绝导出 |
+| `pass_score` | 80 | 宏观评分分界；critical failure 仍可覆盖分数 |
+| `projection_samples` | 40 | 投影/可视化抽样数；增大更慢但不产生 GT |
+| `weights.human_only` | files 15, human 25, hands 35, gmr 15, visualization 10 | 各部分对总分的权重；改动代表新的质量版本 |
+| `thresholds.*` | 见本模块指标表/default.yaml | 帧数、手部、速度、关节限位等 warn/fail 门限；任何变更需写入版本记录 |
+| `product.enabled` | true | 是否产出对外资产包 |
+| `product.root` | YAML 为 assets/...；release 为 `<out>/product` | 发布脚本强制宿主可持久化路径 |
+| `minimum_quality_status` | warn | pass/warn 可导出，fail 永不导出 |
+| `include_camera/include_phc_motion/include_preview` | true/true/true | 数据/预览包含策略；当前综合 motion.npz 始终含可用 camera/PHC provenance |
+| `require_preview` | true（human_sharpa） | 缺 2×2 审核视频则拒绝产品导出 |
+| `object_policy` | exclude | human-only 必须为 exclude |
+| `retention.prune_*` | false | 调试配置不删除工作区；清理只允许批处理已核验输出 |
 
 ## 质量工作流
 
@@ -57,8 +78,7 @@ $PY_LOCO scripts/run_pipeline_from_config.py \
 
 ~~~text
 <out>/<clip>/quality_report.json
-<out>/quality_summary.csv
-<out>/quality_summary.jsonl
+<out>/quality_overview.csv
 ~~~
 
 质量报告必须属于本次 clip，并使用当前 schema 版本；不要将不同输出根或不同配置生成的旧报告复制进来绕过产品门禁。
@@ -83,7 +103,7 @@ $PY_LOCO scripts/run_pipeline_from_config.py \
 ~~~text
 quality_report 达到 minimum_quality_status
   -> 临时 stage 目录
-  -> 写 human / PHC / robot / Sharpa / camera 安全 NPZ
+  -> 将 human、robot、Sharpa、camera 合并为一个安全的 motion.npz（命名空间字段）
   -> 复制质量报告、最终选择记录和 2×2 预览
   -> 写脱敏 pipeline_config、rights、manifest
   -> 写 SHA-256
@@ -112,21 +132,18 @@ $PY_LOCO scripts/run_pipeline_from_config.py \
 
 ~~~text
 <asset>/<clip>/
-  human_motion.npz
-  human_phc_motion.npz          # PHC 数据可用且配置要求时
-  robot_motion.npz
-  robot_hand_motion.npz         # Sharpa 数据可用时
-  camera.npz
+  motion.npz                    # 必需；human__/robot__/sharpa__/camera__ 字段
   quality_report.json
   final_motion_selection.json
   preview_2x2.mp4
   pipeline_config.yaml
-  rights.json
   manifest.json
   checksums.sha256
 ~~~
 
-不会交付 hmr4d_results.pt、MANO PT、ViTPose feature、robot_motion.pkl、PHC pickle、checkpoint、SMPL/MANO 模型、密钥、原视频、分割 mask 或任何物体/场景目录。
+`motion.npz` 不是不透明压缩包：`manifest.json.data_contract.motion.components` 必须列出 human、robot、sharpa、camera，所有字段以双下划线命名空间隔离，例如 `human__translation`、`robot__dof_position`、`sharpa__left_qpos`、`camera__K_fullimg`。其精确字段与 shape 由模块 09 约束。
+
+不会交付 hmr4d_results.pt、MANO PT、ViTPose feature、robot_motion.pkl、PHC pickle、checkpoint、SMPL/MANO 模型、密钥、原视频、分割 mask 或任何物体/场景目录。当前导出器也不会凭空生成 rights.json；输入/人物/模型许可须由发布方在交付系统或项目工单中单独记录。
 
 ## 资产包验证与可选清理
 
@@ -143,4 +160,4 @@ sha256sum -c checksums.sha256
 
 ## 交付许可边界
 
-rights.json 记录输入视频、人物授权、GVHMR 和其他第三方模型/资产的许可状态。它是交付门禁信息，不是法律意见。即使技术质量为 pass，只要权利状态不满足目标用途，也不能对外分发或商业使用。
+当前 `motion.npz` 产品包不包含 `rights.json`，也不会把人物授权、输入视频或模型许可证伪装成技术字段。发布方必须在交付工单、数据治理系统或同级发布清单中记录输入视频、人物授权、GVHMR/Hand4Whole++/SMPL/Unitree 资产的许可状态。它们是交付门禁信息，不是法律意见；即使技术质量为 pass/warn，只要权利状态不满足目标用途，也不能对外分发或商业使用。
