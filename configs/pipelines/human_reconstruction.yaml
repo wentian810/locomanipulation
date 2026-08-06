@@ -1,0 +1,62 @@
+# 严格的人体重建配置：止于人体运动、手部 sidecar 和相机轨迹。
+# 不运行 PHC、GMR、场景/物体重建、机器人渲染或产品导出。
+# 路径可由命令行 --dataset-dir / --output-root / --set 覆盖。
+
+input:
+  dataset_dir: dataset_new6
+  clip_filter: ""
+
+output:
+  root: output_dir/human_reconstruction
+
+environment:
+  # Hand4Whole++ 最终 MANO pose 与 21 个关节一致；不要让 downstream
+  # 消费未重算的旧 joints。
+  GVHMR_RECOMPUTE_DIRECT_MANO: 1
+
+human:
+  backend: hand4wholepp
+  constraint_profile: conservative
+  gvhmr_batch_size: 4
+  hand_batch_size: 1
+  low_memory: true
+  isolate_hand_process: true
+  diagnostics: true
+  hand_crop_tracking:
+    mode: flow_kalman
+    max_gap: 8
+    max_prediction_gap: 2
+    direct_observation_quality: 0.75
+  visible_hand_refine:
+    enabled: true
+    fit_partition: non_tip
+    holdout_min_keypoints: 3
+    holdout_max_relative_regression_px: 0.0
+  filters:
+    wrist: false
+    temporal: true
+    fingers: true
+    global_orient_fill_mode: interpolate
+    wrist_mode: smooth
+
+locomotion:
+  enabled: true
+  smooth_window: 9
+
+phc:
+  enabled: false
+
+gmr:
+  enabled: false
+
+object:
+  enabled: false
+
+# 当前正式 quality/product 流程的“已完成”判定仍以 robot_motion.pkl 为准。
+# 严格人体模式不生成该文件，因此由 docs/human_reconstruction/09_output_contract_and_acceptance.md
+# 中的结构、数值和视觉验收步骤取代。
+quality_evaluation:
+  enabled: false
+
+product:
+  enabled: false

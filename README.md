@@ -1,130 +1,67 @@
-# Loco-manipulation
+# Loco-manipulation human-only pipeline
 
-人体动作到人形机器人全身重定向管线（Loco-Manipulation Pipeline）。
-
-## 当前入口（人体-only）
-
-当前维护的运行线只处理人体、手部和 G1 + Sharpa 重定向；物体重建不在此入口中执行。
-
-- 主启动器：`scripts/run_pipeline_from_config.py`
-- 单视频/保留中间结果配置：`configs/pipelines/human_sharpa.yaml`
-- 批处理配置：`configs/pipelines/human_sharpa_batch.yaml`
-
-从仓库根目录运行人体全流程：
-
-```bash
-python scripts/run_pipeline_from_config.py \
-  --config configs/pipelines/human_sharpa_batch.yaml \
-  --stage human \
-  --disable-object
-```
-
-其余脚本由该启动器按配置调用，不作为独立的正式入口。
-## 功能
-
-从 RGB 视频出发，端到端生成物理可行的机器人全身动作数据：
+这是当前对外对接版本：从 RGB 原视频生成 G1 + Sharpa 的人体动作结果。
 
 ```text
-输入视频 -> GVHMR 人体姿态 -> Hand4Whole++ 手部 -> Locomotion 高度优化
-         -> 时序平滑 -> PHC 物理修复 -> GMR 机器人重定向 -> Sharpa 手部 IK
-         -> 2×2 对比渲染 -> 无 GT 质量分层 -> 安全 NPZ 资产导出
+原视频 -> GVHMR/Hand4Whole++ -> Locomotion -> PHC -> GMR/G1 + Sharpa -> 2×2/质量/资产
 ```
 
-## 目录结构
-
-```
-├── PIPELINE_README.md              # 执行命令与数据流程
-├── PIPELINE_ENGINEERING.md         # 模块边界、NPZ 协议、坐标链
-├── configs/
-│   ├── default.yaml                # 基础默认参数
-│   ├── README.md                   # YAML 参数中文说明
-│   └── pipelines/
-│       ├── human_sharpa.yaml       # 人体-only 保留工作区
-│       └── human_sharpa_batch.yaml # 人体-only 批处理(自动清理)
-├── scripts/
-│   ├── run_pipeline_from_config.py # 工程化主启动器
-│   ├── evaluate_clip_quality.py    # pass/warn/fail 自动质量评价
-│   └── export_dataset_product.py   # 最终资产导出
-├── GVHMR-hand/                     # GVHMR + 手部估计
-├── GVHMR-main/                     # 平滑/PHC 辅助
-├── locomotion_pipeline-main/       # 高度/接触优化
-├── phc-dev-felix-pipeline/         # 物理修复 (PHC)
-├── GMR-master/                     # 机器人重定向与渲染
-└── tests/                          # 单元测试
-```
-
-## 环境要求
-
-- Conda 环境:
-  - `locomotion`: GVHMR 推理 + Locomotion + 平滑
-  - `phc`: Isaac Gym PHC 修复
-  - `gmr`: GMR 机器人重定向 + MuJoCo 渲染
-- SMPL-H / MANO 模型文件 (需单独下载)
-- Unitree H1 机器人 MuJoCo XML 资产
+当前入口不包含场景重建和物体重建。
 
 ## 快速开始
 
 ```bash
-# 1. 检查配置
 python scripts/run_pipeline_from_config.py \
   --config_dir configs/pipelines/human_sharpa.yaml \
   --stage all --check --print-config
 
-# 2. 运行人体-only 全流程
-PYTHONUNBUFFERED=1 python scripts/run_pipeline_from_config.py \
-  --config_dir configs/pipelines/human_sharpa.yaml \
-  --stage all --clip-filter chairwood
-
-# 3. 只导出已有结果
 python scripts/run_pipeline_from_config.py \
   --config_dir configs/pipelines/human_sharpa.yaml \
-  --stage product --clip-filter chairwood
+  --stage all --clip-filter chairwood
 ```
 
-## 最终资产
+详细对接说明从 [PIPELINE_README.md](PIPELINE_README.md) 开始：
 
+- [全流程对接总览](docs/PIPELINE_INTEGRATION_GUIDE.md)
+- [输入与全身准入](docs/modules/01_input_and_preflight.md)
+- [GVHMR 与 Hand4Whole++](docs/modules/02_gvhmr_and_hands.md)
+- [Locomotion 与平滑](docs/modules/03_locomotion_and_smoothing.md)
+- [PHC](docs/modules/04_phc.md)
+- [GMR 与 Sharpa](docs/modules/05_gmr_and_sharpa.md)
+- [质量与最终资产](docs/modules/06_quality_and_product.md)
+- [Docker、挂载与 UCloud 交付](docs/modules/07_docker_and_delivery.md)
+- [每个 CLI 的职责、输入输出与启动边界](docs/CLI_REFERENCE.md)
+- [从 GitHub + UCloud US3 恢复可运行 release](docs/RELEASE_FROM_GITHUB_AND_S3.md)
+
+## 代码结构
+
+```text
+configs/                         # 默认配置和 human_sharpa pipeline
+scripts/run_pipeline_from_config.py
+GVHMR-hand/GVHMR-main/           # GVHMR/Hand4Whole++ 调度
+locomotion_pipeline-main/        # 高度/接触优化
+GMR-master/                      # G1 重定向、Sharpa IK、MuJoCo
+tests/                           # 自动测试
+Dockerfile                       # 人体-only Docker runtime
+docker/preflight.sh              # 容器内环境/资源/测试自检
 ```
-assets/<dataset>/<clip>/
-  human_motion.npz          # SMPL-H 身体 + MANO 双手
-  human_phc_motion.npz      # PHC 物理修复轨迹
-  robot_motion.npz          # H1 机器人关节角
-  robot_hand_motion.npz     # Sharpa 22-DoF 手部
-  camera.npz                # 相机参数
-  quality_report.json       # pass/warn/fail 与指标明细
-  preview_2x2.mp4           # 四画面对比
-  manifest.json             # 资产清单
-  checksums.sha256          # SHA-256 校验
+
+模型权重、原视频和工作输出不进入 Git。PHC 运行代码由服务器的 `server-pipeline` 工作树提供给 Docker 构建上下文；GVHMR/Hand4Whole++/SMPL/ViTPose 等大权重在运行时挂载。
+
+## 资产接口
+
+长期交付目录包含：
+
+```text
+human_motion.npz
+human_phc_motion.npz
+robot_motion.npz
+robot_hand_motion.npz
+camera.npz
+preview_2x2.mp4
+quality_report.json
+manifest.json
+checksums.sha256
 ```
 
-## 执行顺序
-
-| 阶段 | 输入 | 输出 |
-|------|------|------|
-| GVHMR | 工作视频 | hmr4d_results.pt |
-| 手部 | 人物框 + ViTPose | MANO 参数 |
-| 转换 | GVHMR + MANO | 001_converted.npz |
-| Locomotion | converted NPZ | 高度/接触优化 |
-| 平滑 | Locomotion 结果 | 001_smoothed.npz |
-| PHC | smoothed NPZ | PHC 修复轨迹 |
-| GMR | smoothed NPZ | robot_motion.pkl |
-| Sharpa | 手部 sidecar | 001_sharpa_chain_hands.npz |
-| 2×2 | 四路视频 | composite_2x2.mp4 |
-| 质量 | 完整工作输出 | 分层报告与批量 CSV/JSONL |
-| 导出 | 工作输出 | 安全 NPZ 资产包 |
-
-## 依赖模型
-
-运行前需下载以下模型到对应目录：
-
-- SMPL-H: `GVHMR-hand/GVHMR-main/deps/smplh/`
-- MANO: `GVHMR-hand/GVHMR-main/deps/mano/`
-- ViTPose: `GVHMR-hand/GVHMR-main/deps/vitpose/`
-- Hand4Whole++: `GVHMR-hand/GVHMR-main/deps/hand4wholepp/`
-- GVHMR checkpoint: `GVHMR-hand/GVHMR-main/deps/gvhmr/`
-- PHC checkpoint: `phc-dev-felix-pipeline/output/HumanoidIm/`
-
-详见 `PIPELINE_README.md` 和各子模块的 `CLAUDE.md`。
-
-## License
-
-各子模块许可证独立。`product.rights` 默认全部为 `false`，商业使用前须逐项确认。
+商品包不包含 pickle、checkpoint、模型权重、密钥或服务器绝对路径。Docker 镜像构建、权重挂载、预检和 S3 物料见 [Docker 交付说明](docs/modules/07_docker_and_delivery.md)。接收方从空目录恢复时，应遵循 [GitHub + UCloud US3 release 说明](docs/RELEASE_FROM_GITHUB_AND_S3.md)；其中的脚本会校验归档哈希后再加载镜像和挂载模型。

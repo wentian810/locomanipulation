@@ -10,7 +10,9 @@ debug_frames/
 *.ckpt
 *.pt
 !requirements*.pt
-gvhmr/
+# Do not ignore directories named gvhmr globally: this repository contains
+# GVHMR Python modules and Hydra YAML under hmr4d/**/gvhmr/.  Checkpoints stay
+# excluded through **/checkpoints/ below.
 models/
 smpl/
 mano_v1_2/
@@ -91,3 +93,23 @@ phc-dev-felix-pipeline/isaacgym/
 
 # But keep robot motion pkl files
 !*robot_motion*.pkl
+
+# Release cache, credentials and local runtime configuration.  UCloud/US3
+# keys belong only in a local US3CLI profile, never in this repository.
+.release/
+human_work/
+.env
+.env.*
+!.env.example
+*.env
+*.credentials
+*.secret
+*.secrets
+credentials/
+secrets/
+us3cli.ini
+us3cli.yaml
+
+# Large release artifacts are stored in the private object store, not Git.
+*.tar.zst
+*.docker.tar
