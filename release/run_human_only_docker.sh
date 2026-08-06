@@ -80,8 +80,11 @@ MODEL_ROOT="${MODEL_ROOT:-$RELEASE_ROOT/extracted/model-assets}"
 DATASET_DIR="${DATASET_DIR:-$RELEASE_ROOT/extracted/dataset/dataset_new6}"
 IMAGE_NAME="${IMAGE_OVERRIDE:-${IMAGE_NAME:-locomotion-human-only:20260806}}"
 GVHMR_SOURCE_ROOT="$REPO_ROOT/GVHMR-hand/GVHMR-main/hmr4d"
+GVHMR_PIPELINE_SOURCE="$REPO_ROOT/GVHMR-hand/GVHMR-main/tools/pipeline"
 [[ -f "$GVHMR_SOURCE_ROOT/model/gvhmr/gvhmr_pl_demo.py" ]] \
   || die "GitHub source overlay is incomplete: $GVHMR_SOURCE_ROOT/model/gvhmr/gvhmr_pl_demo.py"
+[[ -f "$GVHMR_PIPELINE_SOURCE/smooth_motion.py" ]] \
+  || die "GitHub source overlay is incomplete: $GVHMR_PIPELINE_SOURCE/smooth_motion.py"
 [[ -f "$REPO_ROOT/docker/preflight.sh" ]] \
   || die "GitHub checkout lacks docker/preflight.sh: $REPO_ROOT"
 for path in \
@@ -105,6 +108,10 @@ mounts=(
   # The runtime image carries CUDA/Conda/PHC; the checked-out GVHMR source is
   # mounted so GitHub remains the canonical source of every Python module.
   -v "$GVHMR_SOURCE_ROOT:/workspace/locomotion/GVHMR-hand/GVHMR-main/hmr4d:ro"
+  # Old images expose GVHMR-main as a compatibility symlink.  Overlay the
+  # wrapper directory as well, so the release always uses the checked-out
+  # smoothing/floor scripts regardless of image build date.
+  -v "$GVHMR_PIPELINE_SOURCE:/workspace/locomotion/GVHMR-hand/GVHMR-main/tools/pipeline:ro"
   -v "$REPO_ROOT/docker/preflight.sh:/workspace/locomotion/docker/preflight.sh:ro"
   -v "$MODEL_ROOT/GVHMR-hand/GVHMR-main/inputs/checkpoints:/models/gvhmr/checkpoints:ro"
   -v "$MODEL_ROOT/GVHMR-main/inputs/checkpoints/body_models:/models/gvhmr/body_models:ro"
@@ -124,6 +131,9 @@ fi
 common=(run --rm --gpus all
   -e REQUIRE_MODELS=1
   -e PIPELINE_CHECK_DATASET=/data/input
+  # The old image's GMR assets/body_models is a symlink into /models/gvhmr.
+  # Keep that SMPL-X mount intact and point GMR at the release's SMPL-H tree.
+  -e GMR_BODY_MODEL_PATH=/models/locomotion_assets
   # conda-pack preserved an old editable chumpy .pth path.  Its source is
   # already in the runtime image; make that immutable in-image source importable.
   -e PYTHONPATH=/workspace/locomotion/phc-deps/chumpy

@@ -4,7 +4,7 @@
 
 本项目把“小而可审计的源码”和“大而受许可约束的运行时物料”分开发布：源码、配置、文档和启动脚本在 GitHub；Docker 镜像、两个 Conda 环境的固化结果、PHC 运行时、模型资产和示例视频在 UCloud US3。接收方不需要复制服务器的 Conda 环境，也不应从项目目录手工拼装依赖。
 
-运行脚本会把 GitHub checkout 中的 `GVHMR-hand/GVHMR-main/hmr4d/` 和容器 preflight 脚本以只读方式覆盖挂载到镜像同一路径；这保证 GVHMR Python 源码与发布 commit 完全一致，同时复用镜像内已验证的 CUDA、Conda、PHC 和 Isaac Gym runtime。脚本也为 conda-pack 中失效的 editable `chumpy` 路径补充镜像内只读源码路径。不要只下载 image 后直接执行，而要通过仓库的 `release/run_human_only_docker.sh` 启动。
+运行脚本会把 GitHub checkout 中的 `GVHMR-hand/GVHMR-main/hmr4d/`、`tools/pipeline/` 和容器 preflight 脚本以只读方式覆盖挂载到镜像同一路径；这保证 GVHMR Python 源码、平滑/地面修正脚本与发布 commit 完全一致，同时复用镜像内已验证的 CUDA、Conda、PHC 和 Isaac Gym runtime。脚本也为 conda-pack 中失效的 editable `chumpy` 路径补充镜像内只读源码路径，并把模型包的 `assets/` 目录只读挂载为 GMR 的 `GMR_BODY_MODEL_PATH`，避免旧镜像内的兼容链接覆盖 GVHMR 的 SMPL-X 挂载。不要只下载 image 后直接执行，而要通过仓库的 `release/run_human_only_docker.sh` 启动。
 
 这一说明对应 human-only 全链路：`视频 -> GVHMR/Hand4Whole++ -> Locomotion -> PHC -> GMR/Sharpa -> 质量/资产`。不包含场景、物体、S3 视频采集或对象重建功能。
 
