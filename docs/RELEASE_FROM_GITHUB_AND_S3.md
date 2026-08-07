@@ -121,3 +121,9 @@ bash release/bootstrap_from_ucloud.sh --verify-only
 | 只想运行人体上游 | 在容器内显式传 `--stage human`；完整交付默认 `all`，不要误把上游调试结果当作 PHC/GMR 成品。 |
 
 发布版本的脚本、环境边界和每个 CLI 的职责见 [CLI 参考](CLI_REFERENCE.md)；人体链路的逐模块输入输出见 [人体重建交接总览](HUMAN_RECONSTRUCTION_HANDOVER.md)。
+
+### GVHMR 的 `coco_aug_dict.pth` 是有意纳入源码的小型运行时表
+
+`GVHMR-hand/GVHMR-main/hmr4d/utils/body_model/coco_aug_dict.pth` 是上游 GVHMR 的 1.7 KB COCO 姿态增强查找表，由 `hmr4d.utils.geo.augment_noisy_pose` 在推理时加载；它不是模型 checkpoint，也不是受许可限制的人体模型资产。仓库因此仅为该文件显式豁免全局 `*.pth` 忽略规则，并使其进入 Git checkout 和后续 Docker build context。release runner 会在启动前检查其存在，容器 preflight 会实际加载它。
+
+不要为 human-only 推理补入 BEDLAM/AMASS 训练索引 `.pth`；这些文件仍保持排除，只有明确交付训练或评测能力时才需要另行打包。

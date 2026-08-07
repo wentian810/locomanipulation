@@ -21,9 +21,12 @@ echo "[docker-preflight] phc=$PY_PHC"
 "$PY_LOCO" - <<'PY'
 import chumpy, cv2, mujoco, numpy, scipy, torch, yaml
 from hmr4d.model.gvhmr.gvhmr_pl_demo import DemoPL
+from hmr4d.utils.geo.augment_noisy_pose import COCO17_AUG
 import general_motion_retargeting
 print("locomotion imports: ok")
 print("GVHMR source import: ok (%s)" % DemoPL.__module__)
+assert COCO17_AUG, "GVHMR COCO augmentation lookup table is empty"
+print("GVHMR auxiliary table: ok (%d entries)" % len(COCO17_AUG))
 print("torch=%s cuda=%s available=%s" % (torch.__version__, torch.version.cuda, torch.cuda.is_available()))
 print("numpy=%s scipy=%s mujoco=%s opencv=%s" % (numpy.__version__, scipy.__version__, mujoco.__version__, cv2.__version__))
 PY

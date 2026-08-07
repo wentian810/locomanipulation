@@ -12,6 +12,9 @@ __pycache__
 *.pt
 *.pth
 *.ckpt
+# Keep the small GVHMR runtime lookup table in future Docker build contexts.
+# It is source-adjacent data, not a model checkpoint.
+!GVHMR-hand/GVHMR-main/hmr4d/utils/body_model/coco_aug_dict.pth
 *.pkl
 *.h5
 *.npz

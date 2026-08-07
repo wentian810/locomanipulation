@@ -99,6 +99,8 @@ GVHMR_PIPELINE_SOURCE="$REPO_ROOT/GVHMR-hand/GVHMR-main/tools/pipeline"
 GMR_RENDER_SOURCE="$REPO_ROOT/GMR-master/scripts/render_robot_motion_headless.py"
 [[ -f "$GVHMR_SOURCE_ROOT/model/gvhmr/gvhmr_pl_demo.py" ]] \
   || die "GitHub source overlay is incomplete: $GVHMR_SOURCE_ROOT/model/gvhmr/gvhmr_pl_demo.py"
+[[ -f "$GVHMR_SOURCE_ROOT/utils/body_model/coco_aug_dict.pth" ]] \
+  || die "GitHub source is missing GVHMR's required runtime table: $GVHMR_SOURCE_ROOT/utils/body_model/coco_aug_dict.pth"
 [[ -f "$GVHMR_PIPELINE_SOURCE/smooth_motion.py" ]] \
   || die "GitHub source overlay is incomplete: $GVHMR_PIPELINE_SOURCE/smooth_motion.py"
 [[ -f "$GMR_RENDER_SOURCE" ]] \

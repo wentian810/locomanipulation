@@ -10,6 +10,10 @@ debug_frames/
 *.ckpt
 *.pt
 !requirements*.pt
+# Small upstream runtime lookup table used by
+# hmr4d.utils.geo.augment_noisy_pose during GVHMR inference. This is not a
+# checkpoint and is intentionally versioned with the source tree.
+!GVHMR-hand/GVHMR-main/hmr4d/utils/body_model/coco_aug_dict.pth
 # Do not ignore directories named gvhmr globally: this repository contains
 # GVHMR Python modules and Hydra YAML under hmr4d/**/gvhmr/.  Checkpoints stay
 # excluded through **/checkpoints/ below.
