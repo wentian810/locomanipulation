@@ -1108,12 +1108,32 @@ def get_reward(
 
     if config.contact_rew_scale > 0.0 and len(config.contact_site_ids) > 0:
         site_xpos_torch = wp.to_torch(env.data_wp.site_xpos)
-        contact_pos = site_xpos_torch[:, config.contact_site_ids]
-        contact_dist = torch.norm(contact_pos - contact_pos_ref, p=2, dim=-1)
-        contact_dist_masked = contact_dist * contact_ref.unsqueeze(0)
-        contact_rew = -contact_dist_masked.sum(dim=1)
+        object_contact_pos = site_xpos_torch[:, config.contact_site_ids]
+        reference_dist = torch.norm(
+            object_contact_pos - contact_pos_ref, p=2, dim=-1
+        )
+        # The generic contact graph provides a matched fingertip and a fixed
+        # mesh-local surface anchor.  Penalize separation beyond a small
+        # clearance, while the independent penetration term prevents the
+        # opposite failure mode.  No object category, floor, or support state
+        # participates in this term.
+        pair_gap = torch.zeros_like(reference_dist)
+        valid_pairs = [
+            (idx, sid)
+            for idx, sid in enumerate(config.hand_contact_site_ids)
+            if sid is not None and idx < object_contact_pos.shape[1]
+        ]
+        if valid_pairs:
+            contact_idx = [idx for idx, _ in valid_pairs]
+            hand_site_ids = [sid for _, sid in valid_pairs]
+            hand_contact_pos = site_xpos_torch[:, hand_site_ids]
+            object_pair_pos = object_contact_pos[:, contact_idx]
+            pair_dist = torch.norm(hand_contact_pos - object_pair_pos, p=2, dim=-1)
+            pair_gap[:, contact_idx] = torch.clamp(pair_dist - 0.012, min=0.0)
+        contact_loss = (0.25 * reference_dist + 0.75 * pair_gap) * contact_ref.unsqueeze(0)
+        contact_rew = -config.contact_rew_scale * contact_loss.sum(dim=1)
     else:
-        contact_rew = 0.0
+        contact_rew = torch.zeros_like(qpos_rew)
 
     reward = qpos_rew + qvel_rew + contact_rew
 
@@ -1163,6 +1183,7 @@ def get_reward(
         "qvel_dist": qvel_dist,
         "qpos_rew": qpos_rew,
         "qvel_rew": qvel_rew,
+        "contact_rew": contact_rew,
         "pen_penalty": pen_penalty,
         "drop_penalty": drop_penalty,
         **{f"pedestal_{s}": p for s, p in pedestal_pens.items()},
@@ -1258,24 +1279,30 @@ def compute_contact_point_delta(
     hand_contact_site_ids: list[int | None],
     contact_indices: list[int],
 ) -> torch.Tensor | None:
-    """Mean contact position delta for a hand (current - reference)."""
-    current_positions = []
-    reference_positions = []
+    """Confidence-weighted hand-to-object-anchor delta for one hand.
+
+    ``contact_mask_step`` is a continuous image/geometry confidence in [0, 1].
+    It is intentionally not a hard grasp label: low-confidence frames make no
+    contact-control correction, and no floor/support assumption enters here.
+    """
+    deltas = []
+    weights = []
     for idx in contact_indices:
         if idx >= len(hand_contact_site_ids) or idx >= contact_pos_ref_step.shape[0]:
             continue
         sid = hand_contact_site_ids[idx]
-        if sid is None or contact_mask_step[idx] <= 0.5:
+        weight = torch.clamp(contact_mask_step[idx], min=0.0, max=1.0)
+        if sid is None or float(weight.detach().item()) <= 1.0e-4:
             continue
-        current_positions.append(site_xpos[sid])
-        reference_positions.append(contact_pos_ref_step[idx])
+        deltas.append(site_xpos[sid] - contact_pos_ref_step[idx])
+        weights.append(weight)
 
-    if not current_positions:
+    if not deltas:
         return None
-
-    current_mean = torch.stack(current_positions, dim=0).mean(dim=0)
-    reference_mean = torch.stack(reference_positions, dim=0).mean(dim=0)
-    return current_mean - reference_mean
+    stacked_weights = torch.stack(weights)
+    return (torch.stack(deltas) * stacked_weights[:, None]).sum(dim=0) / (
+        stacked_weights.sum() + 1.0e-6
+    )
 
 
 def get_trace(config: Config, env: MJWPEnv) -> torch.Tensor:

@@ -212,7 +212,13 @@ def _compute_weights_impl(
 
     weights = torch.zeros_like(rews)
     top_rews = rews[top_indices]
-    top_rews_normalized = (top_rews - top_rews.mean()) / (top_rews.std() + 1e-2)
+    # ``top_k`` is allowed to be one for small smoke-test/sample budgets.
+    # The default unbiased estimator is NaN for one element, which then makes
+    # the whole control update NaN.  Population std is exactly zero there and
+    # yields the intended uniform one-sample softmax after the epsilon.
+    top_rews_normalized = (top_rews - top_rews.mean()) / (
+        top_rews.std(unbiased=False) + 1e-2
+    )
     top_weights = F.softmax(top_rews_normalized / temperature, dim=0)
     weights[top_indices] = top_weights
 

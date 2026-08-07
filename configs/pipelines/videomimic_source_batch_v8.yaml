@@ -1,0 +1,77 @@
+# Clean batch after the fixed-camera adapter contract repair.  v8 has its own
+# output and work roots so it cannot inherit any v7 manifest or reconstruction.
+input:
+  dataset_dir: /home/jixingyu/data/animation
+  clip_filter: Ways_to_Jump_+_Sit_+_Fall_Buying_a_Chair_clip1,Ways_to_Jump_+_Sit_+_Fall_Dramatic_clip1
+  min_duration_seconds: 0
+  max_videos: 2
+  fullbody_preflight:
+    enabled: true
+    mode: report
+    model: /home/jixingyu/Loco-manipulation-human-only-release/models/yolo11n-pose.pt
+
+output:
+  root: output_dir/videomimic_source_batch_v8
+
+runtime:
+  cuda_visible_devices: "4"
+
+human:
+  backend: hand4wholepp
+  constraint_profile: conservative
+  hand_batch_size: 1
+
+phc:
+  enabled: false
+
+gmr:
+  enabled: false
+
+scene:
+  enabled: true
+  required: true
+  backend: videomimic_nksr
+  source_motion: smoothed
+  output_subdir: scene_reconstruction_videomimic_v8
+  work_root: scene_work/videomimic_source_batch_v8
+  camera:
+    mode: fixed
+    source: gvhmr
+    validate_static: true
+    freeze_method: robust_median
+    retain_raw_trajectory: true
+    canonicalization: static_optimized
+  external_human:
+    model_type: smpl
+    include_vertices: true
+    include_joints: true
+    include_faces: true
+    units: meter
+  videomimic:
+    root: external/VideoMimic/real2sim
+    recon_env: vm1recon
+    human_env: vm1rs
+    sam2_env: vm1rs
+    gender: auto
+    human_mask_mode: sam2
+    max_frames: 0
+    frame_stride: 1
+    meshification_method: nksr
+  robot_bridge:
+    enabled: false
+  isaac:
+    enabled: false
+  physics:
+    enabled: false
+  runtime:
+    gpu: 4
+    max_parallel_clips: 1
+    timeout_seconds: 21600
+
+resume:
+  skip_existing: false
+  force_hand_preprocess: false
+  force_locomotion: false
+  force_smoothing: false
+  force_phc: false
+  force_gmr: false

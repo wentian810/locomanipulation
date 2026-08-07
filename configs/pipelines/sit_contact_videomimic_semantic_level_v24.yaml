@@ -1,0 +1,196 @@
+# V24: V22 visual fidelity plus explicit GMR chair-contact and mj_step quality routing.
+# PHC keeps the scene-aware replay.  GMR uses the static reference SMPL motion
+# and CRISP-style local chair-contact alignment, so a crossed-leg pose is not
+# silently degraded by the PHC controller before robot retargeting.
+input:
+  dataset_dir: /home/jixingyu/data/animation
+  clip_filter: Ways_to_Jump_+_Sit_+_Fall_Dramatic_clip1
+  min_duration_seconds: 0
+
+output:
+  root: output_dir/sit_contact_scene_static_hard_semantic_level_v24
+
+resume:
+  skip_existing: true
+  force_phc: true
+  force_gmr: true
+
+gmr:
+  enabled: true
+  source: smoothed
+  camera_source: gvhmr
+  camera_subject_align_xy: false
+  scene_mujoco_name: scene_reconstruction_semantic_chair_v5/scene/scene_mujoco_semantic_chair.xml
+  render: true
+  composite_2x2: true
+  mujoco_gl: egl
+  scene_contact_alignment:
+    enabled: true
+    # Default batch policy: derive semantic support anchors, but never apply a
+    # time-local root shift.  Such a shift caused the observed post-sit slide.
+    # Only an explicitly labelled legacy diagnostic may use the old correction.
+    mode: audit_only
+    # Match GMR's source exactly: do not inherit PHC crossed-leg tracking error.
+    source_motion_name: 001_smoothed.npz
+    chair_primitives_name: semantic_chair_primitives_mujoco.json
+    body_model_root: GMR-master/assets/body_models
+    robot_xml: GMR-master/assets/unitree_g1/g1_mocap_29dof.xml
+    anchor_conda_env: vm1rs
+    gmr_conda_env: locomotion
+    output_name: robot_motion_scene_contact_aligned.pkl
+    report_name: gmr_scene_contact_alignment_report.json
+    clearance_m: 0.025
+    max_shift_m: 0.30
+    # The reference contains one short, but coherent, back-contact episode.
+    min_back_contact_coverage: 0.15
+    ramp_frames: 6
+    bridge_max_gap: 2
+
+
+  # This branch never overwrites the V22-style GMR fidelity render.  It writes
+  # an auditable robot-feasibility candidate and a separate mj_step verdict.
+  scene_physics_validation:
+    enabled: true
+    gmr_conda_env: locomotion
+    robot_xml: GMR-master/assets/unitree_g1/g1_mocap_29dof.xml
+    scene_mujoco_name: scene_reconstruction_semantic_chair_v5/scene/scene_mujoco_semantic_chair.xml
+    anchor_name: smpl_support_contacts.npz
+    seat_geom: seat_support_geom
+    clearance_m: 0.003
+    # Batch-safe visible-foot grounding: it applies only a stable <=5 mm mesh
+    # calibration and otherwise retains the source motion unchanged.
+    visible_ground_calibration:
+      enabled: true
+      output_name: robot_motion_visible_ground_contact.pkl
+      report_name: gmr_visible_ground_contact.json
+      target_clearance_m: -0.0005
+      max_global_offset_m: 0.005
+      repair_trigger_m: -0.001
+      max_local_joint_delta_rad: 0.04
+    # GVHMR route: calibrate the static support object from a stable semantic
+    # sitting tail.  No per-frame human/root repair is permitted here.
+    static_scene_support_fit:
+      enabled: true
+      output_scene_dir_name: scene_reconstruction_semantic_chair_static_support
+      report_name: gmr_static_scene_support_fit.json
+      support_body: auto
+      # Fit the visible robot support surface, not its conservative AABB proxy.
+      # This preserves the immutable GMR motion while removing mesh-level hover.
+      support_surface: render_mesh
+      support_footprint_margin_m: 0.01
+      seat_target_m: 0.004
+      back_weight: 0.0
+      max_xy_m: 0.0
+      max_z_m: 0.12
+      max_yaw_deg: 0.0
+      settled_tail_frames: 20
+      maxiter: 280
+      image_contract:
+        enabled: true
+        report_name: gmr_static_scene_support_image_contract.json
+        camera_path_name: scene_reconstruction_semantic_chair_v5/human/gvhmr_camera_static_hard.npz
+        keypoints_name_template: gvhmr_out/{clip}/vitpose_wholebody.pt
+        max_p50_regression_px: 0.75
+        max_p90_regression_px: 1.5
+    audit_report_name: gmr_scene_contact_audit_v24.json
+    audit_arrays_name: gmr_scene_contact_audit_v24.npz
+    quality_report_name: gmr_scene_physics_quality_report_v24.json
+    seat_projection:
+      # Retained only as an explicit diagnostic.  The default GVHMR branch is
+      # scene-side calibration, because a root projection violates image motion.
+      enabled: false
+      required: false
+      output_name: robot_motion_scene_seat_back_projected_v24.pkl
+      report_name: gmr_seat_projection_v24.json
+      clearance_m: 0.003
+      support_target_m: 0.008
+      activation_distance_m: 0.25
+      min_root_dz_m: -0.10
+      max_root_dz_m: 0.10
+      # Dense evaluation is intentional: sparse interpolation previously hid
+      # collisions between sampled frames.
+      sample_stride: 1
+      maxiter: 350
+    dynamic_validation:
+      enabled: true
+      driven_visual_replay: true
+      source: visual_reference
+      output_name: robot_motion_mjstep_visual_boundary_v24.pkl
+      report_name: gmr_mjstep_visual_boundary_v24.json
+      substeps: 16
+      # Both trajectories are the GVHMR visual boundary.  MuJoCo advances each
+      # substep and validates semantic contacts, but does not replace crossed-leg
+      # poses with an unstable free-PD response.
+      root_tracking_mode: kinematic
+      joint_tracking_mode: kinematic
+      # The static fit selects the actual support body from the settled pose.
+      # Crossed-leg links are diagnostic-only and never drive seat height.
+      seat_contact_bodies: auto_static_support
+      seat_contact_surface: render_mesh
+      support_footprint_margin_m: 0.01
+      min_seat_support_frame_ratio: 0.95
+      settled_tail_frames: 20
+      enable_ground_contact: true
+      ground_contact_surface: render_mesh
+      joint_kp: 100.0
+      joint_kd: 5.0
+      joint_torque_limit: 80.0
+      max_penetration_m: 0.005
+      max_penetration_frame_ratio: 0.0
+      max_root_rmse_m: 0.00001
+      max_joint_median_rad: 0.00001
+
+scene:
+  enabled: true
+  required: true
+  backend: videomimic_nksr
+  source_motion: smoothed
+  physics_motion: final
+  output_subdir: scene_reconstruction_semantic_chair_v5
+  work_root: scene_work/sit_contact_pipeline_v22
+  camera:
+    mode: fixed
+    source: gvhmr
+    validate_static: true
+    canonicalization: static_hard
+  videomimic:
+    root: external/VideoMimic/real2sim
+    recon_env: vm1recon
+    # Exact foreground masks are mandatory for static-scene fusion; bbox masks
+    # are only a legacy diagnostic path and are rejected by the batch policy.
+    human_mask_mode: sam2
+    human_env: vm1rs
+    gender: auto
+    max_frames: 0
+    meshification_method: nksr
+  robot_bridge:
+    enabled: true
+    source_output_root: output_dir/sit_contact_scene_static_hard_semantic_level_v13
+    source_scene_subdir: scene_reconstruction_semantic_chair_v3
+    motion_name: human_motion_static_hard.npz
+    camera_name: gvhmr_camera_static_hard.npz
+  semantic_chair:
+    enabled: true
+    source_package_subdir: scene_reconstruction_semantic_chair_v3
+    swap_horizontal_axes: true
+    level_seat: true
+    back_sign: 1
+    phc_backrest_collision: true
+  isaac:
+    enabled: true
+    collision_mode: semantic_seat_backrest_support
+    allow_global_floor_fix: false
+  runtime:
+    # Batch policy: choose the GPU with the largest free memory at launch.
+    gpu: auto
+    max_parallel_clips: 1
+    timeout_seconds: 3600
+
+quality_evaluation:
+  enabled: false
+  run_after_stages: []
+
+product:
+  enabled: false
+  export_after_stages: []
+

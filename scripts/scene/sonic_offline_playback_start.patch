@@ -1,0 +1,9 @@
+--- a/gear_sonic_deploy/src/g1/g1_deploy_onnx_ref/src/g1_deploy_onnx_ref.cpp
++++ b/gear_sonic_deploy/src/g1/g1_deploy_onnx_ref/src/g1_deploy_onnx_ref.cpp
+@@ -3465,2 +3465,5 @@
+-      if (playback_input_file_ && program_state_ == ProgramState::CONTROL) {
++      // Offline playback must be able to send its start event while the
++      // controller is waiting for control.  INIT remains excluded because it
++      // must first complete its normal LowState-based startup.
++      if (playback_input_file_ && program_state_ != ProgramState::INIT) {
+         std::string line;

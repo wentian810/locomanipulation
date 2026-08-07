@@ -4,6 +4,24 @@
 input:
   dataset_dir: dataset_new6
   clip_filter: ""
+  # Human-only output has no reconstructed chair/bed/floor-contact asset.  Do
+  # not spend GVHMR/PHC/GMR on a clip whose sustained pose needs non-foot
+  # support. These values were calibrated on the 8 s animation batch; the
+  # bilateral-foot terms reject normal single-leg balance and bending.
+  fullbody_preflight:
+    support_posture_mode: gate
+    support_posture_ratio: 0.10
+    support_posture_min_run_seconds: 0.60
+    support_posture_thigh_horizontal_cos: 0.35
+    support_posture_shin_vertical_cos: 0.70
+    support_posture_torso_vertical_cos: 0.85
+    support_posture_max_hip_knee_height_ratio: 0.30
+    support_posture_min_ankle_below_hip_ratio: 0.15
+    support_posture_max_ankle_height_difference_ratio: 0.18
+    support_posture_object_model: models/yolo11n.pt
+    support_posture_object_confidence: 0.05
+    support_posture_object_ratio: 0.06
+    support_posture_weak_pose_ratio: 0.05
 
 output:
   root: scratch/dataset_new6_human_sharpa

@@ -1,0 +1,137 @@
+# Training-free, lower-limb-only ablation.  Keeping the root almost fixed
+# prevents one planted leg correction from introducing a floating opposite leg.
+input:
+  dataset_dir: /home/jixingyu/data/animation
+  clip_filter: Ways_to_Jump_+_Sit_+_Fall_Buying_a_Chair_clip1,Ways_to_Jump_+_Sit_+_Fall_Dramatic_clip1
+  min_duration_seconds: 0
+  max_videos: 2
+  fullbody_preflight:
+    enabled: true
+    mode: report
+    model: /home/jixingyu/Loco-manipulation-human-only-release/models/yolo11n-pose.pt
+
+output:
+  root: output_dir/gvhmr_2d_contact_refined_batch_v3
+
+runtime:
+  cuda_visible_devices: "4"
+
+environment:
+  PHC: /home/jixingyu/Loco-manipulation-human-only-release/phc-dev-felix-pipeline
+  GVHMR_RECOMPUTE_DIRECT_MANO: 1
+  GVHMR_HAND4WHOLEPP_ROOT: /home/jixingyu/Loco-manipulation-human-only-release/GVHMR-hand/GVHMR-main/third-party/Hand4Whole-plus-plus_RELEASE
+
+human:
+  backend: hand4wholepp
+  constraint_profile: conservative
+  hand_batch_size: 1
+  smpl_2d_contact_refinement:
+    enabled: true
+    body_model_root: GMR-master/assets/body_models
+    evidence_root: scene_work/gvhmr_2d_contact_evidence_v1
+    gmr_evidence_root: output_dir/videomimic_calibrated_semantic_batch_v6
+    gmr_evidence_motion_name: robot_motion.pkl
+    robot_xml: GMR-master/assets/unitree_g1/g1_mocap_29dof.xml
+    source_motion_name: 001_smoothed.npz
+    preserved_input_name: 001_smoothed_before_2d_contact_refinement.npz
+    candidate_motion_name: 001_smoothed_2d_contact_refined.npz
+    report_name: smpl_2d_contact_refinement_report.json
+    selection_name: smpl_2d_contact_refinement_selection.json
+    device: cuda
+    minimum_episode_frames: 5
+    # Affect only a narrow neighbourhood of visual/GMR-confirmed support;
+    # do not force a foot during neighbouring swing frames.
+    window_padding_frames: 5
+    min_keypoint_confidence: 0.45
+    gmr_contact_height_m: 0.015
+    iterations: 800
+    learning_rate: 0.025
+    temporal_weight: 12.0
+    second_difference_weight: 6.0
+    max_root_translation_delta_m: 0.01
+    max_leg_joint_delta_rad: 0.35
+    max_anchor_error_m: 0.025
+    max_source_anchor_drift_m: 0.35
+    max_holdout_p95_regression_px: 1.5
+    max_all_p95_regression_px: 4.0
+    max_root_delta_speed_m_s: 0.80
+    max_root_delta_acceleration_m_s2: 13.0
+    max_leg_delta_speed_rad_s: 5.0
+    max_leg_delta_acceleration_rad_s2: 110.0
+
+phc:
+  enabled: false
+
+gmr:
+  enabled: true
+  hand_model: sharpa
+  source: smoothed
+  # Quality gates must pass before rendering a fresh final video.
+  render: false
+  composite_2x2: false
+  robot: unitree_g1
+  mujoco_gl: egl
+
+scene:
+  enabled: true
+  required: true
+  backend: videomimic_nksr
+  source_motion: smoothed
+  physics_motion: final
+  output_subdir: scene_reconstruction_videomimic_calibrated_semantic_v6
+  camera:
+    mode: fixed
+    source: gvhmr
+    validate_static: true
+    freeze_method: robust_median
+    retain_raw_trajectory: true
+    canonicalization: static_hard
+  external_human:
+    model_type: smpl
+    include_vertices: true
+    include_joints: true
+    include_faces: true
+    units: meter
+  videomimic:
+    root: external/VideoMimic/real2sim
+    recon_env: vm1recon
+    human_env: vm1rs
+    sam2_env: vm1rs
+    gender: auto
+    human_mask_mode: sam2
+    max_frames: 0
+    frame_stride: 1
+    meshification_method: nksr
+  robot_bridge:
+    enabled: true
+    source_output_root: output_dir/videomimic_calibrated_semantic_batch_v6
+    source_scene_subdir: scene_reconstruction_videomimic_calibrated_semantic_v6
+    motion_name: human_motion_static_hard.npz
+    camera_name: gvhmr_camera_static_hard.npz
+  semantic_chair:
+    enabled: false
+  isaac:
+    enabled: false
+  physics:
+    enabled: false
+  runtime:
+    gpu: 4
+    max_parallel_clips: 1
+    timeout_seconds: 21600
+
+object:
+  enabled: false
+
+quality_evaluation:
+  enabled: false
+
+product:
+  enabled: false
+
+resume:
+  skip_existing: true
+  force_hand_preprocess: false
+  force_locomotion: false
+  force_smoothing: false
+  force_phc: false
+  force_gmr: false

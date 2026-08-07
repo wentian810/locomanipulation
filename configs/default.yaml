@@ -35,6 +35,22 @@ input:
     # person at >=15% of the primary person's box scale causes a clean reject.
     max_competing_person_ratio: 0.0
     min_competing_person_scale_ratio: 0.15
+    # A conservative temporal 2D posture signal for motions likely requiring
+    # a chair, wall, or other external support. Keep the base default off;
+    # human-only batch configs enable it after a local calibration pass.
+    support_posture_mode: off       # off | report | gate
+    support_posture_ratio: 0.30
+    support_posture_min_run_seconds: 1.0
+    support_posture_thigh_horizontal_cos: 0.75
+    support_posture_shin_vertical_cos: 0.80
+    support_posture_torso_vertical_cos: 0.80
+    support_posture_max_hip_knee_height_ratio: 0.18
+    support_posture_min_ankle_below_hip_ratio: 0.15
+    support_posture_max_ankle_height_difference_ratio: 0.18
+    support_posture_object_model: null
+    support_posture_object_confidence: 0.05
+    support_posture_object_ratio: 0.06
+    support_posture_weak_pose_ratio: 0.05
   work_video:
     enabled: true
     directory: dataset_new6_work_1280
@@ -201,15 +217,18 @@ gmr:
   hand_model: sharpa          # sharpa=G1 body + external Sharpa | g1 | brainco
   source: final                 # PHC-grounded when successful, otherwise 001_smoothed
   target_fps: 30
-  # Kinematic support constraint for the G1 retarget. This is not a MuJoCo
-  # torque simulation: only detected left/right support frames are floor
-  # aligned; flight frames retain PHC's vertical trajectory.
-  height_adjust_mode: support_aware_foot_geom
+  # One global foot-geometry calibration preserves the source vertical
+  # trajectory. Eventwise root-Z correction is experimental and requires an
+  # independently validated support signal; G1 sole geometry alone is not one.
+  height_adjust_mode: global_foot_geom
   support_contact_height: 0.08       # m, sole-height candidate threshold
+  support_exit_contact_height: 0.10  # m, exit hysteresis; must be >= entry
   support_max_vertical_speed: 1.20   # m/s, rejects a fast airborne foot
+  support_max_horizontal_speed: 0.15 # m/s, rejects a sliding/swinging foot
   support_min_contact_run: 3         # frames
   support_max_contact_gap: 1         # frames
   support_root_step_limit: 0.03      # m/frame; 0 disables transition limiting
+  support_apply_root_z: false        # explicit experimental opt-in only
   human_yaw_offset_deg: 0.0
   camera_source: gvhmr
   render: true
@@ -297,6 +316,63 @@ object:
     object_floor_collision: true
     render_video: true
 
+# Static human-scene reconstruction is intentionally independent from the
+# dynamic object stage.  The first deployment only exposes the contract and
+# preflight; CRISP execution is enabled by the dedicated human_scene pipeline.
+scene:
+  enabled: false
+  required: false
+  backend: crisp
+  source_motion: smoothed
+  physics_motion: final
+  output_subdir: scene_reconstruction
+  work_root: scene_work/crisp
+
+  camera:
+    mode: fixed
+    source: gvhmr
+    validate_static: true
+    freeze_method: robust_median
+    retain_raw_trajectory: true
+
+  external_human:
+    model_type: smpl
+    include_vertices: true
+    include_joints: true
+    include_faces: true
+    units: meter
+
+  crisp:
+    root: external/CRISP-Real2Sim
+    conda_env: crisp
+    run_mask: true
+    run_mogesam: true
+    run_ufm: true
+    run_contact_pass: false
+    run_nksr: false
+    static_camera: true
+    hmr_type: external
+
+  collision:
+    export_obj: true
+    export_urdf: true
+    export_mujoco: true
+    prefer_box_primitives: true
+    allow_mesh_fallback: true
+
+  quality:
+    enabled: true
+    required_for_product: false
+    max_primitives_warn: 80
+    max_primitives_fail: 150
+    contact_distance_warn_m: 0.05
+    penetration_p95_fail_m: 0.03
+
+  runtime:
+    gpu: 0
+    max_parallel_clips: 1
+    timeout_seconds: 3600
+
 runtime:
   conda_base: ${HOME}/miniconda3
   python: ${HOME}/miniconda3/envs/locomotion/bin/python
@@ -307,6 +383,7 @@ runtime:
     samhq: moge2
     moge2: moge2
     megapose: megapose
+    crisp: crisp
 
 # 高级参数可直接覆盖现有 Bash 环境变量。不要在此保存任何云密钥。
 environment:

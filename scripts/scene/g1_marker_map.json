@@ -1,0 +1,18 @@
+{
+  "pelvis": "pelvis",
+  "head": "head_link",
+  "ltoe": "left_toe_link",
+  "rtoe": "right_toe_link",
+  "lheel": "left_ankle_roll_link",
+  "rheel": "right_ankle_roll_link",
+  "lknee": "left_knee_link",
+  "rknee": "right_knee_link",
+  "lhand": "left_rubber_hand",
+  "rhand": "right_rubber_hand",
+  "lelbow": "left_elbow_link",
+  "relbow": "right_elbow_link",
+  "lshoulder": "left_shoulder_pitch_link",
+  "rshoulder": "right_shoulder_pitch_link",
+  "lhip": "left_hip_pitch_link",
+  "rhip": "right_hip_pitch_link"
+}

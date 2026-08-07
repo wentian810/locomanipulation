@@ -1,0 +1,68 @@
+# Isolated PHC control experiment: the V20 chair is hash-attested as a
+# seat-only proxy.  It never exposes raw NKSR mesh collision to PhysX.
+input:
+  dataset_dir: /home/jixingyu/data/animation
+  clip_filter: Ways_to_Jump_+_Sit_+_Fall_Buying_a_Chair_clip1
+  min_duration_seconds: 0
+  max_videos: 1
+
+output:
+  root: output_dir/videomimic_post_buying_v21_semantic_phc_candidate
+
+runtime:
+  cuda_visible_devices: "4"
+
+phc:
+  enabled: true
+
+gmr:
+  enabled: false
+  source: final
+
+scene:
+  enabled: true
+  required: true
+  backend: videomimic_nksr
+  source_motion: smoothed
+  output_subdir: scene_reconstruction_v20_auto_semantic_chair
+  camera:
+    mode: fixed
+    source: gvhmr
+    validate_static: true
+    freeze_method: robust_median
+    retain_raw_trajectory: true
+    canonicalization: static_optimized
+  # Metadata only: this candidate consumes a completed V20 package.
+  videomimic:
+    root: external/VideoMimic/real2sim
+    recon_env: vm1recon
+    human_env: vm1rs
+    gender: auto
+    human_mask_mode: sam2
+    max_frames: 0
+    frame_stride: 1
+    meshification_method: nksr
+    stage4:
+      enabled: false
+  robot_bridge:
+    enabled: true
+    source_output_root: output_dir/videomimic_source_buying_v21_semantic_phc
+    source_scene_subdir: scene_reconstruction_v20_auto_semantic_chair
+    motion_name: human_motion_static_hard.npz
+    camera_name: gvhmr_camera_static_hard.npz
+  isaac:
+    enabled: true
+    collision_mode: semantic_seat_support_only
+    semantic_preflight_report: scene_work/semantic_auto_layout_buying_v20/physics_preflight_v2_cleanenv/semantic_phc_preflight_v1.json
+    allow_global_floor_fix: false
+  physics:
+    enabled: false
+  runtime:
+    gpu: 4
+    max_parallel_clips: 1
+    timeout_seconds: 21600
+
+resume:
+  skip_existing: false
+  force_phc: true
+  force_gmr: false

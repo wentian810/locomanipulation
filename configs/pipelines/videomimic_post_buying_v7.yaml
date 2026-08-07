@@ -1,0 +1,59 @@
+# One-clip PHC/GMR continuation.  It consumes only the validated v7 source
+# package and falls back to 001_smoothed through 001_final.npz if PHC rejects.
+input:
+  dataset_dir: /home/jixingyu/data/animation
+  clip_filter: Ways_to_Jump_+_Sit_+_Fall_Buying_a_Chair_clip1
+  min_duration_seconds: 0
+  max_videos: 1
+
+output:
+  root: output_dir/videomimic_post_buying_v7
+
+runtime:
+  cuda_visible_devices: "4"
+
+phc:
+  enabled: true
+
+gmr:
+  enabled: true
+  hand_model: sharpa
+  source: final
+  camera_subject_align_xy: false
+  render: true
+  composite_2x2: true
+  robot: unitree_g1
+  mujoco_gl: egl
+
+scene:
+  enabled: true
+  required: true
+  backend: videomimic_nksr
+  source_motion: smoothed
+  output_subdir: scene_reconstruction_videomimic_v7
+  camera:
+    mode: fixed
+    source: gvhmr
+    validate_static: true
+    freeze_method: robust_median
+    retain_raw_trajectory: true
+    canonicalization: static_optimized
+  robot_bridge:
+    enabled: true
+    source_output_root: output_dir/videomimic_source_batch_v7
+    source_scene_subdir: scene_reconstruction_videomimic_v7
+    motion_name: human_motion_static_hard.npz
+    camera_name: gvhmr_camera_static_hard.npz
+  isaac:
+    enabled: false
+  physics:
+    enabled: false
+  runtime:
+    gpu: 4
+    max_parallel_clips: 1
+    timeout_seconds: 21600
+
+resume:
+  skip_existing: false
+  force_phc: true
+  force_gmr: true

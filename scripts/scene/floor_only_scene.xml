@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="g1_reference_floor_only">
+  <worldbody/>
+</mujoco>

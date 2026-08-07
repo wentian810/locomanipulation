@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "task": "g1_deepmimic_proj_heightfield",
+  "reference_time_scale": 2.5,
+  "output_root": "scene_work/videomimic_policy_stage2_v1/batch_v13_observed_ground_time25_input",
+  "clips": [
+    {
+      "clip": "Ways_to_Jump_+_Sit_+_Fall_Buying_a_Chair_clip1",
+      "reference_h5": "scene_work/videomimic_policy_stage2_v1/Ways_to_Jump_+_Sit_+_Fall_Buying_a_Chair_clip1/stage4_reference/retarget_poses_g1.h5",
+      "terrain_obj": "scene_work/videomimic_policy_stage2_v1/Ways_to_Jump_+_Sit_+_Fall_Buying_a_Chair_clip1/terrain/semantic_chair_observed_ground.obj"
+    },
+    {
+      "clip": "Ways_to_Jump_+_Sit_+_Fall_Dramatic_clip1",
+      "reference_h5": "scene_work/videomimic_policy_stage2_v1/Ways_to_Jump_+_Sit_+_Fall_Dramatic_clip1/stage4_reference/retarget_poses_g1.h5",
+      "terrain_obj": "scene_work/videomimic_policy_stage2_v1/Ways_to_Jump_+_Sit_+_Fall_Dramatic_clip1/terrain/semantic_chair_observed_ground.obj"
+    }
+  ]
+}

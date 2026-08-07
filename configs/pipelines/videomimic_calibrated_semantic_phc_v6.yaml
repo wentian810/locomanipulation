@@ -1,0 +1,144 @@
+# Batch semantic support candidates calibrated from VideoMimic/NKSR primitives.
+# These packages are candidates only: PHC/GMR must pass independent gates before
+# any result may be promoted to product output.
+input:
+  dataset_dir: /home/jixingyu/data/animation
+  clip_filter: Ways_to_Jump_+_Sit_+_Fall_Buying_a_Chair_clip1,Ways_to_Jump_+_Sit_+_Fall_Dramatic_clip1
+  min_duration_seconds: 0
+  max_videos: 2
+  fullbody_preflight:
+    enabled: true
+    mode: report
+    model: /home/jixingyu/Loco-manipulation-human-only-release/models/yolo11n-pose.pt
+
+output:
+  root: output_dir/videomimic_calibrated_semantic_batch_v6
+
+runtime:
+  cuda_visible_devices: "4"
+
+environment:
+  PHC: /home/jixingyu/Loco-manipulation-human-only-release/phc-dev-felix-pipeline
+  GVHMR_RECOMPUTE_DIRECT_MANO: 1
+  GVHMR_HAND4WHOLEPP_ROOT: /home/jixingyu/Loco-manipulation-human-only-release/GVHMR-hand/GVHMR-main/third-party/Hand4Whole-plus-plus_RELEASE
+
+human:
+  backend: hand4wholepp
+  constraint_profile: conservative
+  hand_batch_size: 1
+  hand_crop_tracking:
+    mode: flow_kalman
+    max_gap: 8
+    max_prediction_gap: 2
+    direct_observation_quality: 0.75
+  visible_hand_refine:
+    enabled: true
+    fit_partition: non_tip
+    holdout_min_keypoints: 3
+    holdout_max_relative_regression_px: 0.0
+
+phc:
+  enabled: true
+
+gmr:
+  enabled: false
+  hand_model: sharpa
+  source: smoothed
+  render: true
+  composite_2x2: true
+  robot: unitree_g1
+  mujoco_gl: egl
+
+scene:
+  enabled: true
+  required: true
+  backend: videomimic_nksr
+  source_motion: smoothed
+  physics_motion: final
+  output_subdir: scene_reconstruction_videomimic_calibrated_semantic_v6
+  work_root: scene_work/videomimic_calibrated_semantic_batch_v6
+  camera:
+    mode: fixed
+    source: gvhmr
+    validate_static: true
+    freeze_method: robust_median
+    retain_raw_trajectory: true
+    canonicalization: static_hard
+  external_human:
+    model_type: smpl
+    include_vertices: true
+    include_joints: true
+    include_faces: true
+    units: meter
+  videomimic:
+    root: external/VideoMimic/real2sim
+    recon_env: vm1recon
+    human_env: vm1rs
+    sam2_env: vm1rs
+    gender: auto
+    human_mask_mode: sam2
+    max_frames: 0
+    frame_stride: 1
+    meshification_method: nksr
+  robot_bridge:
+    enabled: true
+    source_output_root: output_dir/videomimic_real_scene_regression_v1
+    source_scene_subdir: scene_reconstruction_videomimic_repackaged_provenance_v6
+    motion_name: human_motion_static_hard.npz
+    camera_name: gvhmr_camera_static_hard.npz
+  semantic_chair:
+    enabled: true
+    source_package_subdir: scene_reconstruction_videomimic_repackaged_provenance_v6
+    back_sign: 1
+    swap_horizontal_axes: true
+    level_seat: true
+    phc_backrest_collision: true
+  isaac:
+    enabled: true
+    collision_mode: semantic_seat_backrest_support
+    allow_global_floor_fix: false
+  physics:
+    enabled: false
+    collision_source: first_round_nksr_plus_measured_support_patch
+    visual_source: cleaned_filled_nksr
+    root_trajectory_adjustment: none
+    render_width: 960
+    render_height: 720
+    mj_step_substeps: 8
+    max_negative_contact_distance_m: 0.012
+    require_mjstep_pass: true
+  collision:
+    export_obj: true
+    export_urdf: true
+    export_mujoco: true
+    prefer_box_primitives: false
+    allow_mesh_fallback: false
+  quality:
+    enabled: true
+    required_for_product: false
+    max_primitives_warn: 80
+    max_primitives_fail: 150
+    contact_distance_warn_m: 0.05
+    penetration_p95_fail_m: 0.03
+  runtime:
+    gpu: 4
+    max_parallel_clips: 1
+    timeout_seconds: 21600
+
+object:
+  enabled: false
+
+quality_evaluation:
+  enabled: true
+  run_after_stages: [all]
+
+product:
+  enabled: false
+
+resume:
+  skip_existing: true
+  force_hand_preprocess: false
+  force_locomotion: false
+  force_smoothing: false
+  force_phc: true
+  force_gmr: false

@@ -849,6 +849,24 @@ def main(
     mj_model = mj_spec.compile()
     mj_data = mujoco.MjData(mj_model)
 
+    # Keep the optimizer's contact order explicit and scene-derived.  These
+    # sites are fixed mesh-local anchors; their per-frame targets are exported
+    # from the visual hand--object evidence.  No floor/pedestal site is part of
+    # this contract.
+    contact_site_ids = []
+    for side in ("right", "left"):
+        if embodiment_type not in (side, "bimanual"):
+            continue
+        for finger_name in finger_names:
+            site_name = f"track_object_{side}_{finger_name}"
+            site_id = mujoco.mj_name2id(
+                mj_model, mujoco.mjtObj.mjOBJ_SITE, site_name
+            )
+            if site_id < 0:
+                raise RuntimeError(f"Missing contact site in generated scene: {site_name}")
+            contact_site_ids.append(int(site_id))
+    task_info["contact_site_ids"] = contact_site_ids
+
     # to_xml() re-validates mesh files against mj_spec.meshdir (relative to the
     # loaded robot XML's dir), so keep compile_meshdir set during serialization,
     # then patch the saved <compiler meshdir="..."> to save_meshdir (what
@@ -877,5 +895,4 @@ def main(
                 mujoco.mj_step(mj_model, mj_data)
                 viewer.sync()
                 rate_limiter.sleep()
-
 

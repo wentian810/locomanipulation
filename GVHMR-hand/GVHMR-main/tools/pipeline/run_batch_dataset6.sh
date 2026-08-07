@@ -340,7 +340,7 @@ PY
         fi
         if [ "$FORCE_WORK_VIDEO" = "1" ] || [ ! -f "$INPUT_VIDEO" ] || [ "$WORK_CONFIG_MATCH" != "1" ] || [ "$WORK_MEDIA_MATCH" != "1" ]; then
             echo -e "${B}Creating work video:${N} $INPUT_VIDEO"
-            ffmpeg -hide_banner -loglevel error -y \
+            ffmpeg -nostdin -hide_banner -loglevel error -y \
                 -i "$VIDEO" \
                 -vf "fps=${WORK_FPS},scale=${WORK_WIDTH}:${WORK_HEIGHT}:force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2" \
                 -c:v libx264 -preset veryfast -crf "$WORK_CRF" -pix_fmt yuv420p -an \

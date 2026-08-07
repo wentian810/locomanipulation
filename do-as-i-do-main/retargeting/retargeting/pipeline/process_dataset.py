@@ -370,6 +370,81 @@ def _copy_obj_texture(src_obj: str, dst_dir: str) -> str | None:
     return os.path.basename(dst)
 
 
+def _load_contact_graph(
+    raw_dir: str,
+    start_frame: int,
+    num_frames: int,
+) -> dict[str, dict[str, np.ndarray]]:
+    """Load optional, category-agnostic contact evidence from the adapter.
+
+    ``phase1_states.npz`` stores a continuous per-finger confidence and one
+    mesh-local surface anchor per finger.  The adapter emits those anchors from
+    hand-mask/ray evidence, not from names such as ``chair_back`` or from an
+    inferred floor.  Older raw directories remain valid and simply receive no
+    contact guidance.
+    """
+    empty = {
+        side: {
+            "score": np.zeros((num_frames, 5), dtype=np.float64),
+            "anchor_local": np.zeros((5, 3), dtype=np.float64),
+        }
+        for side in ("right", "left")
+    }
+    path = os.path.join(raw_dir, "phase1_states.npz")
+    if not os.path.exists(path):
+        loguru.logger.warning(
+            "No phase1_states.npz at {}; contact guidance is disabled for this clip.",
+            path,
+        )
+        return empty
+    with np.load(path) as states:
+        result = {}
+        for side in ("right", "left"):
+            score_key = f"finger_contact_score_{side}"
+            anchor_key = f"contact_anchor_local_{side}"
+            if score_key not in states or anchor_key not in states:
+                loguru.logger.warning(
+                    "{} lacks {} or {}; contact guidance is disabled for that side.",
+                    path,
+                    score_key,
+                    anchor_key,
+                )
+                result[side] = empty[side]
+                continue
+            score_all = np.asarray(states[score_key], dtype=np.float64)
+            anchor = np.asarray(states[anchor_key], dtype=np.float64)
+            end_frame = start_frame + num_frames
+            if score_all.ndim != 2 or score_all.shape[1] != 5 or end_frame > len(score_all):
+                loguru.logger.warning(
+                    "{} has incompatible {} shape {}; contact guidance is disabled for that side.",
+                    path,
+                    score_key,
+                    score_all.shape,
+                )
+                result[side] = empty[side]
+                continue
+            if anchor.shape != (5, 3) or not np.isfinite(anchor).all():
+                loguru.logger.warning(
+                    "{} has incompatible {} shape {}; contact guidance is disabled for that side.",
+                    path,
+                    anchor_key,
+                    anchor.shape,
+                )
+                result[side] = empty[side]
+                continue
+            result[side] = {
+                "score": np.clip(score_all[start_frame:end_frame], 0.0, 1.0),
+                "anchor_local": anchor,
+            }
+    return result
+
+
+def _object_anchor_positions(qpos_obj: np.ndarray, anchors_local: np.ndarray) -> np.ndarray:
+    """Reference world positions of fixed mesh-local contact anchors."""
+    rotations = Rotation.from_quat(qpos_obj[:, [4, 5, 6, 3]]).as_matrix()
+    return np.einsum("tij,fj->tfi", rotations, anchors_local) + qpos_obj[:, None, :3]
+
+
 def main(
     raw_dir: str = "../reconstruction/whisking",
     output_root_dir: str = "outputs",
@@ -517,8 +592,8 @@ def main(
     # 2b. Drop the first `start_frame` reference frames.
     # ------------------------------------------------------------------
     # All per-frame arrays are sliced in lockstep, so frame 0 below becomes the
-    # new start: centering, the floor lift, the in-hand freeze window, and
-    # speed resampling all then operate over the trimmed trajectory.
+    # new start: coordinate centering, the in-hand evidence, and speed
+    # resampling all operate over the trimmed trajectory.
     if start_frame > 0:
         if start_frame >= N - 1:
             raise ValueError(
@@ -543,6 +618,12 @@ def main(
             left_betas = left_betas[start_frame:]
         N -= start_frame
         loguru.logger.info(f"start_frame={start_frame}: trimmed to {N} frames")
+
+    contact_graph = _load_contact_graph(
+        raw_dir=raw_dir,
+        start_frame=start_frame,
+        num_frames=N,
+    )
 
     # Object frames needing force-interpolation (negative-depth / missing).
     # Kept separate so the shared-mask max_burst step can't later treat a long
@@ -686,18 +767,14 @@ def main(
         left_fingertips = left_joints[:, FINGERTIP_JOINT_IDX, :]
 
     # ------------------------------------------------------------------
-    # 5. Resolve object mesh and compute the world-frame shift
+    # 5. Resolve the object mesh and choose an arbitrary local-world origin
     # ------------------------------------------------------------------
-    # The shift combines (a) centering the object's frame-0 xy at the origin
-    # and (b) lifting so the lowest point of any geometry (object mesh + hand
-    # vertices) over the *entire* trajectory sits at z=0. The floor in
-    # the simulator is a plane at z=0, so any reference target dipping below
-    # that becomes physically unreachable — checking only frame 0 (as the
-    # original code did) lets later frames sneak under the floor.
-    #
-    # Gravity-aligned Z-up axes are preserved — NOT rotated into the object's
-    # local frame — because MuJoCo's floor sits at Z=0 with gravity along -Z,
-    # and rotating into the object frame would map horizontal object axes to Z.
+    # There is no reconstructed floor/table/environment in this input.  Never
+    # manufacture one by lifting the full trajectory to z=0: that is a hidden
+    # support constraint and makes airborne/reoriented objects invalid.  We
+    # only select a coordinate origin, at the frame-0 object translation.  A
+    # global translation changes neither the fixed mesh, the per-frame SE(3),
+    # nor hand--object distances.
     # Canonical (reference-frame) object mesh, emitted by the reconstruction
     # pipeline at the configured init_frame (so the frame index varies).
     mesh_candidates = sorted(glob.glob(
@@ -712,33 +789,10 @@ def main(
     centering_offset = obj_trans_cam[0]
     verts = _load_obj_verts(mesh_src) * mesh_scale
 
-    # Object world-frame z over all frames: for each frame i, z-component of
-    # (R_i @ v) + t_i is (R_i[2, :] @ v) + t_i[2]. Vectorized over (N, V).
-    obj_min_z = np.inf
-    if len(verts) > 0:
-        R_all = Rotation.from_quat(obj_quat_cam[:, [1, 2, 3, 0]]).as_matrix()
-        z_axes = R_all[:, 2, :]  # (N, 3) — third row of each rotation
-        obj_z_world = z_axes @ verts.T + obj_trans_cam[:, 2:3]  # (N, V)
-        obj_min_z = float(obj_z_world.min())
-
-    hand_min_z = np.inf
-    if process_right and right_vertices.size > 0:
-        hand_min_z = min(hand_min_z, float(right_vertices[..., 2].min()))
-    if process_left and left_vertices.size > 0:
-        hand_min_z = min(hand_min_z, float(left_vertices[..., 2].min()))
-
-    traj_min_z = min(obj_min_z, hand_min_z)
-    if not np.isfinite(traj_min_z):
-        traj_min_z = float(centering_offset[2])
-
-    world_offset = np.array(
-        [float(centering_offset[0]), float(centering_offset[1]), traj_min_z]
-    )
+    world_offset = np.asarray(centering_offset, dtype=np.float64).copy()
     loguru.logger.info(
         f"world_offset={world_offset.round(4)} "
-        f"(centering_xy={centering_offset[:2].round(4)}, "
-        f"traj_min_z={traj_min_z:.4f}, "
-        f"obj_min_z={obj_min_z:.4f}, hand_min_z={hand_min_z:.4f})"
+        "(frame-0 object translation only; no floor/support normalization)"
     )
 
     # ------------------------------------------------------------------
@@ -885,6 +939,27 @@ def main(
                 f"{side}: froze qpos_obj[{j_end + 1}:] = qpos_obj[{j_end}]"
             )
 
+    # Fixed mesh-local anchors become per-frame world targets through the
+    # tracked object SE(3).  Contact confidence remains soft; the object is
+    # unconstrained by any invented environment whenever the confidence is 0.
+    contact_right = (
+        contact_graph["right"]["score"]
+        if process_right else np.zeros((N, 5), dtype=np.float64)
+    )
+    contact_left = (
+        contact_graph["left"]["score"]
+        if process_left else np.zeros((N, 5), dtype=np.float64)
+    )
+    contact_anchor_right = contact_graph["right"]["anchor_local"]
+    contact_anchor_left = contact_graph["left"]["anchor_local"]
+    contact_ref_pos_right = _object_anchor_positions(qpos_obj_right, contact_anchor_right)
+    contact_ref_pos_left = _object_anchor_positions(qpos_obj_left, contact_anchor_left)
+    loguru.logger.info(
+        "Contact graph confidence: right={:.1f} frame-equivalents, left={:.1f} frame-equivalents",
+        float(contact_right.sum()),
+        float(contact_left.sum()),
+    )
+
     # ------------------------------------------------------------------
     # 7. Save trajectory_keypoints.npz
     # ------------------------------------------------------------------
@@ -910,10 +985,12 @@ def main(
         qpos_pip_left=qpos_pip_left,
         qpos_dip_left=qpos_dip_left,
         qpos_obj_left=qpos_obj_left,
-        contact_right=np.zeros((N, 10)),
-        contact_pos_right=np.zeros((10, 3)),
-        contact_left=np.zeros((N, 10)),
-        contact_pos_left=np.zeros((10, 3)),
+        contact_right=contact_right.astype(np.float32),
+        contact_pos_right=contact_anchor_right.astype(np.float32),
+        contact_ref_pos_right=contact_ref_pos_right.astype(np.float32),
+        contact_left=contact_left.astype(np.float32),
+        contact_pos_left=contact_anchor_left.astype(np.float32),
+        contact_ref_pos_left=contact_ref_pos_left.astype(np.float32),
         centering_offset=centering_offset,
         mano_verts_right=mano_verts_right,
         mano_faces_right=mano_faces_right,

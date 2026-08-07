@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "profile": "unitree_g1_29dof_position_servo_v1",
+  "quantity": "continuous_joint_torque_limit_nm",
+  "provenance": {
+    "source_url": "https://raw.githubusercontent.com/unitreerobotics/unitree_ros/master/robots/g1_description/g1_29dof_rev_1_0.xml",
+    "source_field": "joint actuatorfrcrange",
+    "retrieved_utc": "2026-08-03",
+    "interpretation": "Each symmetric force range equals the official joint actuator-force limit. The task command is a joint-angle target; MuJoCo's bounded position actuator produces the corresponding physical torque."
+  },
+  "low_level_position_servo": {
+    "actuator_type": "position",
+    "kp_nm_per_rad": 400.0,
+    "dampratio": 1.0,
+    "joint_dynamics": {
+      "damping_nms_per_rad": 0.001,
+      "armature_kgm2": 0.01,
+      "frictionloss_nm": 0.1
+    },
+    "scope": "simulation baseline with critically damped MuJoCo servo and official torque saturation; not a hardware identification claim"
+  },
+  "joint_torque_limits_nm": {
+    "left_hip_pitch_joint": 88.0,
+    "left_hip_roll_joint": 139.0,
+    "left_hip_yaw_joint": 88.0,
+    "left_knee_joint": 139.0,
+    "left_ankle_pitch_joint": 50.0,
+    "left_ankle_roll_joint": 50.0,
+    "right_hip_pitch_joint": 88.0,
+    "right_hip_roll_joint": 139.0,
+    "right_hip_yaw_joint": 88.0,
+    "right_knee_joint": 139.0,
+    "right_ankle_pitch_joint": 50.0,
+    "right_ankle_roll_joint": 50.0,
+    "waist_yaw_joint": 88.0,
+    "waist_roll_joint": 50.0,
+    "waist_pitch_joint": 50.0,
+    "left_shoulder_pitch_joint": 25.0,
+    "left_shoulder_roll_joint": 25.0,
+    "left_shoulder_yaw_joint": 25.0,
+    "left_elbow_joint": 25.0,
+    "left_wrist_roll_joint": 25.0,
+    "left_wrist_pitch_joint": 5.0,
+    "left_wrist_yaw_joint": 5.0,
+    "right_shoulder_pitch_joint": 25.0,
+    "right_shoulder_roll_joint": 25.0,
+    "right_shoulder_yaw_joint": 25.0,
+    "right_elbow_joint": 25.0,
+    "right_wrist_roll_joint": 25.0,
+    "right_wrist_pitch_joint": 5.0,
+    "right_wrist_yaw_joint": 5.0
+  }
+}

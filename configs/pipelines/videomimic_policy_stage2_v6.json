@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "task": "g1_deepmimic_proj_heightfield",
+  "output_root": "scene_work/videomimic_policy_stage2_v1/batch_v6_semantic_input",
+  "clips": [
+    {
+      "clip": "Ways_to_Jump_+_Sit_+_Fall_Buying_a_Chair_clip1",
+      "reference_h5": "scene_work/videomimic_policy_stage2_v1/Ways_to_Jump_+_Sit_+_Fall_Buying_a_Chair_clip1/stage4_reference/retarget_poses_g1.h5",
+      "terrain_obj": "output_dir/videomimic_calibrated_semantic_batch_v6/Ways_to_Jump_+_Sit_+_Fall_Buying_a_Chair_clip1/scene_reconstruction_videomimic_calibrated_semantic_v6/scene/background_mesh_semantic_chair.obj"
+    },
+    {
+      "clip": "Ways_to_Jump_+_Sit_+_Fall_Dramatic_clip1",
+      "reference_h5": "scene_work/videomimic_policy_stage2_v1/Ways_to_Jump_+_Sit_+_Fall_Dramatic_clip1/stage4_reference/retarget_poses_g1.h5",
+      "terrain_obj": "output_dir/videomimic_calibrated_semantic_batch_v6/Ways_to_Jump_+_Sit_+_Fall_Dramatic_clip1/scene_reconstruction_videomimic_calibrated_semantic_v6/scene/background_mesh_semantic_chair.obj"
+    }
+  ]
+}

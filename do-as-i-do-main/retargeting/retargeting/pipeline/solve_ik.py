@@ -85,6 +85,31 @@ def main(
     qpos_wrist_left = loaded_data["qpos_wrist_left"][start_idx:end_idx]
     qpos_obj_right = loaded_data["qpos_obj_right"][start_idx:end_idx]
     qpos_obj_left = loaded_data["qpos_obj_left"][start_idx:end_idx]
+    num_input_frames = qpos_obj_right.shape[0]
+
+    def _contact_array(name: str, shape: tuple[int, ...]) -> np.ndarray:
+        if name not in loaded_data:
+            loguru.logger.warning("{} missing from {}; using zero contact evidence", name, file_path)
+            return np.zeros(shape, dtype=np.float64)
+        value = np.asarray(loaded_data[name][start_idx:end_idx], dtype=np.float64)
+        if value.shape != shape:
+            loguru.logger.warning(
+                "{} has shape {} (expected {}); using zero contact evidence",
+                name,
+                value.shape,
+                shape,
+            )
+            return np.zeros(shape, dtype=np.float64)
+        return value
+
+    contact_right = _contact_array("contact_right", (num_input_frames, 5))
+    contact_left = _contact_array("contact_left", (num_input_frames, 5))
+    contact_ref_pos_right = _contact_array(
+        "contact_ref_pos_right", (num_input_frames, 5, 3)
+    )
+    contact_ref_pos_left = _contact_array(
+        "contact_ref_pos_left", (num_input_frames, 5, 3)
+    )
 
     # Build reference array: (H, num_sites, 7) where 7 = [x, y, z, qw, qx, qy, qz]
     qpos_ref = np.concatenate(
@@ -275,12 +300,64 @@ def main(
                 signal_data, np.ones(window_size) / window_size, mode="valid"
             )
 
-        filtered = np.zeros(
-            (qpos_list.shape[0] - average_frame_size + 1, qpos_list.shape[1])
+        def moving_average_nd(signal_data, window_size=5):
+            if signal_data.shape[0] < window_size:
+                raise ValueError(
+                    f"Cannot smooth {signal_data.shape[0]} frames with window {window_size}"
+                )
+            csum = np.concatenate(
+                [np.zeros_like(signal_data[:1]), np.cumsum(signal_data, axis=0)], axis=0
+            )
+            return (csum[window_size:] - csum[:-window_size]) / window_size
+
+        def smooth_qpos_with_quaternions(qpos: np.ndarray, window_size: int) -> np.ndarray:
+            """Moving-average qpos while preserving every ball/free quaternion.
+
+            Quaternion signs are equivalent rotations.  Averaging their scalar
+            components without first aligning signs can produce a near-zero
+            quaternion, which later makes MuJoCo/MJWarp unstable or NaN.  Linear
+            coordinates retain the old moving average; only quaternion blocks
+            receive hemisphere alignment and normalization.
+            """
+            filtered_qpos = np.zeros(
+                (qpos.shape[0] - window_size + 1, qpos.shape[1]), dtype=qpos.dtype
+            )
+            for dim in range(qpos.shape[1]):
+                filtered_qpos[:, dim] = moving_average_filter(qpos[:, dim], window_size)
+
+            quat_slices = []
+            for joint_id, joint_type in enumerate(model.jnt_type):
+                qadr = int(model.jnt_qposadr[joint_id])
+                if joint_type == mujoco.mjtJoint.mjJNT_FREE:
+                    quat_slices.append(slice(qadr + 3, qadr + 7))
+                elif joint_type == mujoco.mjtJoint.mjJNT_BALL:
+                    quat_slices.append(slice(qadr, qadr + 4))
+            for qslice in quat_slices:
+                quats = qpos[:, qslice].copy()
+                for frame in range(1, len(quats)):
+                    if np.dot(quats[frame - 1], quats[frame]) < 0.0:
+                        quats[frame] *= -1.0
+                for out_frame in range(filtered_qpos.shape[0]):
+                    mean_quat = quats[out_frame : out_frame + window_size].mean(axis=0)
+                    norm = np.linalg.norm(mean_quat)
+                    if norm < 1.0e-8:
+                        # This should be unreachable after hemisphere alignment;
+                        # use the window's valid endpoint rather than exporting
+                        # a non-rotation if malformed upstream data slips in.
+                        mean_quat = quats[out_frame].copy()
+                        norm = np.linalg.norm(mean_quat)
+                    filtered_qpos[out_frame, qslice] = mean_quat / max(norm, 1.0e-8)
+            return filtered_qpos
+
+        qpos_list = smooth_qpos_with_quaternions(qpos_list, average_frame_size)
+        contact_right = moving_average_nd(contact_right, average_frame_size)
+        contact_left = moving_average_nd(contact_left, average_frame_size)
+        contact_ref_pos_right = moving_average_nd(
+            contact_ref_pos_right, average_frame_size
         )
-        for i in range(qpos_list.shape[1]):
-            filtered[:, i] = moving_average_filter(qpos_list[:, i], average_frame_size)
-        qpos_list = filtered
+        contact_ref_pos_left = moving_average_nd(
+            contact_ref_pos_left, average_frame_size
+        )
     else:
         loguru.logger.info("Skipping IK smoothing.")
 
@@ -319,8 +396,27 @@ def main(
         imageio.mimsave(video_path, images, fps=int(1 / ref_dt))
         loguru.logger.info(f"Saved video to {video_path}")
 
+    if embodiment_type == "bimanual":
+        contact = np.concatenate([contact_right, contact_left], axis=1)
+        contact_pos = np.concatenate([contact_ref_pos_right, contact_ref_pos_left], axis=1)
+    elif embodiment_type == "right":
+        contact, contact_pos = contact_right, contact_ref_pos_right
+    elif embodiment_type == "left":
+        contact, contact_pos = contact_left, contact_ref_pos_left
+    else:
+        raise ValueError(f"Unsupported embodiment_type for contact export: {embodiment_type}")
+    assert contact.shape[0] == qpos_list.shape[0]
+    assert contact_pos.shape[:2] == contact.shape
+
     out_npz = f"{file_dir}/trajectory_kinematic.npz"
-    np.savez(out_npz, qpos=qpos_list, qvel=qvel_list, frequency=1 / ref_dt)
+    np.savez(
+        out_npz,
+        qpos=qpos_list,
+        qvel=qvel_list,
+        contact=contact.astype(np.float32),
+        contact_pos=contact_pos.astype(np.float32),
+        frequency=1 / ref_dt,
+    )
     loguru.logger.info(f"Saved {out_npz}")
 
     out_npz = f"{file_dir}/trajectory_ikrollout.npz"

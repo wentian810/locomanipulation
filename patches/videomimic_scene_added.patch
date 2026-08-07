@@ -1,0 +1,406 @@
+diff --git a/real2sim/stage2_optimization/megahunter_optimization.py b/real2sim/stage2_optimization/megahunter_optimization.py
+index 4fd9ec4..3fca587 100644
+--- a/real2sim/stage2_optimization/megahunter_optimization.py
++++ b/real2sim/stage2_optimization/megahunter_optimization.py
+@@ -166,6 +166,7 @@ def run_jax_alignment(
+     optimize_root_rotation: bool = True,
+     optimize_local_pose: bool = True,
+     post_temporal_smoothing: bool = False,
++    preserve_external_root_translation: bool = False,
+     frame_missing_thr: int = 3,
+     smpl_model_path: str = "./assets/body_models/smpl/SMPL_MALE.pkl",
+     device: str = "cuda"
+@@ -542,10 +543,17 @@ def run_jax_alignment(
+             princpt = im_K_dict[frame_name][:2, 2]
+             right_hip_idx = coco_main_body_joint_names.index('right_hip')
+             left_hip_idx = coco_main_body_joint_names.index('left_hip')
+-            init_root_trans = estimate_initial_trans(smpl_joints[smpl_main_body_joint_idx], vitpose_2d_keypoints[coco_main_body_joint_idx], focal_length, princpt, coco_main_body_skeleton, right_hip_idx, left_hip_idx)
+-
+-            # transform the init_root_trans to be in the world coordinate system
+             cam2world = im_poses_dict[frame_name]
++            external_root_camera = smpl_params.get("source_root_transl_camera")
++            if external_root_camera is not None:
++                # The external adapter owns the human trajectory.  Reuse its
++                # root translation in camera coordinates, then express it in
++                # MegaSAM's world with the matching per-frame camera pose.
++                init_root_trans = torch.as_tensor(external_root_camera, dtype=torch.float32, device=device).reshape(3)
++            else:
++                init_root_trans = estimate_initial_trans(smpl_joints[smpl_main_body_joint_idx], vitpose_2d_keypoints[coco_main_body_joint_idx], focal_length, princpt, coco_main_body_skeleton, right_hip_idx, left_hip_idx)
++
++            # Transform the camera-space root translation to the world frame.
+             init_root_trans_world = cam2world[:3, :3] @ init_root_trans + cam2world[:3, 3]
+             smpl_params_dict[frame_idx][person_id]['smpl_params']['init_root_trans'] = init_root_trans_world # (3,)
+ 
+@@ -845,7 +853,14 @@ def run_jax_alignment(
+     print(f"Optimized scale: {optimized_scale}")
+ 
+     optimized_root_residual_translations = np.array(optimized_root_residual_translations)
+-    optimized_root_residual_translations = optimized_root_residual_translations + init_root_trans_np
++    if preserve_external_root_translation:
++        # A static scene can be mapped to the existing human world only when
++        # its externally supplied root trajectory remains intact.  Keep the
++        # optimized scene scale, but do not replace that trajectory frame by
++        # frame with the 2-D alignment residuals.
++        optimized_root_residual_translations = init_root_trans_np.copy()
++    else:
++        optimized_root_residual_translations = optimized_root_residual_translations + init_root_trans_np
+ 
+     if optimized_root_residual_rotations is not None:
+         # convert from quaternion to rotation matrix
+@@ -914,7 +929,7 @@ def run_jax_alignment(
+     frame_sample_ratio = int(world_env_path.split('_subsample_')[-1].split('.')[0])
+     freq = 30 / frame_sample_ratio
+ 
+-    if post_temporal_smoothing:
++    if post_temporal_smoothing and not preserve_external_root_translation:
+         from utilities.one_euro_filter import OneEuroFilter
+ 
+         for p_idx, person_id in enumerate(person_ids):
+@@ -1180,4 +1195,4 @@ def main(
+             
+ 
+ if __name__ == "__main__":
+-    tyro.cli(main)
+\ No newline at end of file
++    tyro.cli(main)
+diff --git a/real2sim/stage3_postprocessing/mesh_generation.py b/real2sim/stage3_postprocessing/mesh_generation.py
+index 9ba3e06..25fd841 100644
+--- a/real2sim/stage3_postprocessing/mesh_generation.py
++++ b/real2sim/stage3_postprocessing/mesh_generation.py
+@@ -40,7 +40,7 @@ def load_dict_from_hdf5(h5file: h5py.File, path: str = "/") -> Dict:
+     return result
+ 
+ 
+-def get_mesh(bg_points: np.ndarray, bg_colors: np.ndarray, meshification_method: str = "nksr", nksr_reconstructor=None) -> Tuple[trimesh.Trimesh, np.ndarray, np.ndarray]:
++def get_mesh(bg_points: np.ndarray, bg_colors: np.ndarray, meshification_method: str = "nksr", nksr_reconstructor=None) -> Tuple[trimesh.Trimesh, trimesh.Trimesh, np.ndarray, np.ndarray]:
+     """
+     Generate mesh from background points using specified meshification method.
+     
+@@ -51,14 +51,14 @@ def get_mesh(bg_points: np.ndarray, bg_colors: np.ndarray, meshification_method:
+         nksr_reconstructor: NKSR reconstructor network
+         
+     Returns:
+-        Tuple of (trimesh_mesh, combined_points, infilled_pointcloud)
++        Tuple of (first_round_mesh, filled_mesh, combined_points, infilled_pointcloud)
+     """
+     from stage3_postprocessing.meshification import two_round_meshify_and_fill_holes
+     
+     # Start timing for background meshifying
+     start_meshifying = time.time()
+     
+-    trimesh_mesh, combined_points, infilled_pointcloud = two_round_meshify_and_fill_holes(
++    first_round_mesh, filled_mesh, combined_points, infilled_pointcloud = two_round_meshify_and_fill_holes(
+         bg_points, 
+         meshification_method=meshification_method, 
+         nksr_reconstructor=nksr_reconstructor
+@@ -68,7 +68,7 @@ def get_mesh(bg_points: np.ndarray, bg_colors: np.ndarray, meshification_method:
+     end_meshifying = time.time()
+     print(f"\033[92mBackground meshifying process time: {end_meshifying - start_meshifying:.2f} seconds\033[0m")
+     
+-    return trimesh_mesh, combined_points, infilled_pointcloud
++    return first_round_mesh, filled_mesh, combined_points, infilled_pointcloud
+ 
+ 
+ def filter_points_and_colors(
+@@ -347,21 +347,28 @@ def generate_mesh_from_calibrated_data(
+     
+     # Generate mesh
+     if not no_spf:
+-        mesh, _, _ = get_mesh(
++        first_round_mesh, mesh, _, _ = get_mesh(
+             bg_points_filtered, 
+             bg_colors_filtered, 
+             meshification_method=meshification_method, 
+             nksr_reconstructor=nksr_reconstructor
+         )
+     else:
+-        mesh, _, _ = get_mesh(
++        first_round_mesh, mesh, _, _ = get_mesh(
+             no_spf_bg_points_filtered, 
+             no_spf_bg_colors_filtered, 
+             meshification_method=meshification_method, 
+             nksr_reconstructor=nksr_reconstructor
+         )
+     
+-    # Get the largest mesh component
++    # Preserve both reconstruction stages.  The filled second pass remains the
++    # legacy visual mesh; the first pass is the evidence-preserving candidate
++    # for contact-aware cleanup, because top-down fill can seal chair/table
++    # undersides that were never observed.
++    first_round_mesh.export(output_dir / 'background_mesh_nksr_first_round.obj')
++    mesh.export(output_dir / 'background_mesh_nksr_filled.obj')
++
++    # Keep the legacy output behavior for existing consumers.
+     mesh = max(mesh.split(only_watertight=False), key=lambda m: len(m.faces))
+     
+     # Save outputs
+@@ -407,4 +414,4 @@ def main():
+ 
+ 
+ if __name__ == "__main__":
+-    main()
+\ No newline at end of file
++    main()
+diff --git a/real2sim/stage3_postprocessing/meshification.py b/real2sim/stage3_postprocessing/meshification.py
+index 96849c2..0c24188 100644
+--- a/real2sim/stage3_postprocessing/meshification.py
++++ b/real2sim/stage3_postprocessing/meshification.py
+@@ -16,7 +16,6 @@ from scipy.ndimage import binary_erosion, binary_dilation
+ from scipy.spatial import cKDTree
+ from matplotlib.path import Path
+ import copy
+-import pandas as pd
+ import open3d as o3d
+ import torch
+ import nksr
+@@ -212,7 +211,7 @@ def two_round_meshify_and_fill_holes(points: np.ndarray, downsample_voxel_size:
+         # vertices, faces = meshify(combined_points.detach().cpu().numpy())
+         # mesh2 = trimesh.Trimesh(vertices=vertices, faces=faces)
+ 
+-        return mesh2, combined_points, infilled_pointcloud
++        return trimesh_mesh, mesh2, combined_points, infilled_pointcloud
+ 
+     elif meshification_method == "ndc":
+         from NDC.ndc_callable import meshify
+@@ -229,11 +228,11 @@ def two_round_meshify_and_fill_holes(points: np.ndarray, downsample_voxel_size:
+         vertices, faces = meshify(combined_points)
+         mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
+ 
+-        return mesh, combined_points, infilled_pointcloud
++        return mesh, mesh, combined_points, infilled_pointcloud
+ 
+ def downsample_point_cloud(points, voxel_size=0.1, num_point_threshold=100, simple_sampling=False):
+     """
+-    Downsample points using a custom voxel grid method (vectorized with Pandas).
++    Downsample points using a deterministic custom voxel grid.
+ 
+     For each voxel:
+     - If it contains fewer than 100 points, discard all points in that voxel.
+@@ -242,84 +241,54 @@ def downsample_point_cloud(points, voxel_size=0.1, num_point_threshold=100, simp
+     if points.shape[0] == 0:
+         return np.empty((0, 3))
+ 
+-    # Calculate voxel indices for each point
+-    voxel_indices = np.floor(points / voxel_size).astype(int)
++    points = np.asarray(points)
++    voxel_indices = np.floor(points / voxel_size).astype(np.int64)
+ 
+-    # Create a Pandas DataFrame for easier grouping
+-    df = pd.DataFrame(points, columns=['x', 'y', 'z'])
+-    df['vx'] = voxel_indices[:, 0]
+-    df['vy'] = voxel_indices[:, 1]
+-    df['vz'] = voxel_indices[:, 2]
+-
+-    # Group by voxel index
+-    grouped = df.groupby(['vx', 'vy', 'vz'])
+-
+-    # Filter groups to keep only those with >= 100 points
+-    filtered_groups = grouped.filter(lambda x: len(x) >= num_point_threshold)
+-
+-    if filtered_groups.empty:
+-         return np.empty((0, 3)) # Return empty array if no voxels meet criteria
++    # Sort lexicographically so that group order matches pandas.groupby's
++    # default sorted-key order, without depending on a pandas binary build.
++    sorted_indices = np.lexsort(
++        (voxel_indices[:, 2], voxel_indices[:, 1], voxel_indices[:, 0])
++    )
++    sorted_voxels = voxel_indices[sorted_indices]
++    group_starts = np.r_[
++        0,
++        np.flatnonzero(np.any(np.diff(sorted_voxels, axis=0), axis=1)) + 1,
++    ]
++    group_ends = np.r_[group_starts[1:], len(sorted_indices)]
+ 
+     if simple_sampling:
+-        # We group again on the filtered data before sampling
+-        sampled_df = filtered_groups.groupby(['vx', 'vy', 'vz']).sample(n=20, replace=False, random_state=3301) # Set random_state for reproducibility if needed
+-
+-        # Return the sampled points as a NumPy array
+-        return sampled_df[['x', 'y', 'z']].to_numpy()
+-
+-    else:
+-        # --- New sampling logic starts here ---
+-        def process_group(group):
+-            if len(group) < num_point_threshold: # Should already be filtered, but double-check
+-                return None
+-
+-            points_in_group = group[['x', 'y', 'z']].to_numpy()
+-            centroid = np.mean(points_in_group, axis=0)
+-            
+-            # Calculate distances to centroid
+-            distances = np.linalg.norm(points_in_group - centroid, axis=1)
+-            
+-            # Find the number of points for top 20%
+-            num_top_20_percent = max(1, int(len(points_in_group) * 0.20)) # Ensure at least 1 point
+-            
+-            # Get indices of the closest points
+-            # closest_indices = np.argsort(distances)[:num_top_20_percent]
+-
+-            # uniformly sample 20 points based on distance to centroid
+-            chosen_indices = np.argsort(distances)[::len(points_in_group)//20]
+-            
+-            # Select the closest points
+-            selected_points = points_in_group[chosen_indices]
+-            
+-            # Calculate mean Z of selected points
+-            median_z = np.mean(selected_points[:, 2])
+-            
+-            # Create a copy to modify
+-            modified_points = selected_points.copy()
+-            
+-            # Set Z coordinate to the median Z
+-            modified_points[:, 2] = median_z
+-            
+-            # Return as DataFrame to easily concatenate later
+-            return pd.DataFrame(modified_points, columns=['x', 'y', 'z'])
+-
+-        # Apply the processing function to each group in the filtered data
+-        # Group again on the filtered data before applying
+-        processed_dfs = []
+-        for _, group in filtered_groups.groupby(['vx', 'vy', 'vz']):
+-            processed_df = process_group(group)
+-            if processed_df is not None:
+-                processed_dfs.append(processed_df)
+-
+-
+-        # Concatenate the results if list is not empty
+-        if not processed_dfs:
+-            return np.empty((0, 3))
+-        else:
+-            final_sampled_df = pd.concat(processed_dfs, ignore_index=True)
+-            # Return the sampled points as a NumPy array
+-            return final_sampled_df[['x', 'y', 'z']].to_numpy()
+-        # --- New sampling logic ends here ---
++        rng = np.random.RandomState(3301)
++        sampled_groups = []
++        for start, end in zip(group_starts, group_ends):
++            indices = sorted_indices[start:end]
++            if len(indices) >= num_point_threshold:
++                sampled_groups.append(
++                    points[rng.choice(indices, size=20, replace=False)]
++                )
++        return (
++            np.concatenate(sampled_groups, axis=0)
++            if sampled_groups
++            else np.empty((0, 3), dtype=points.dtype)
++        )
++
++    processed_groups = []
++    for start, end in zip(group_starts, group_ends):
++        points_in_group = points[sorted_indices[start:end]]
++        if len(points_in_group) < num_point_threshold:
++            continue
++        centroid = np.mean(points_in_group, axis=0)
++        distances = np.linalg.norm(points_in_group - centroid, axis=1)
++        stride = max(1, len(points_in_group) // 20)
++        selected_points = points_in_group[np.argsort(distances)[::stride]]
++        modified_points = selected_points.copy()
++        modified_points[:, 2] = np.mean(selected_points[:, 2])
++        processed_groups.append(modified_points)
++
++    return (
++        np.concatenate(processed_groups, axis=0)
++        if processed_groups
++        else np.empty((0, 3), dtype=points.dtype)
++    )
+ 
+ 
+ def estimate_point_normals(points, radius=0.1, max_nn=30, orient_consistently=True):
+diff --git a/real2sim/stage4_retargeting/robot_motion_retargeting.py b/real2sim/stage4_retargeting/robot_motion_retargeting.py
+index e898c13..1567728 100644
+--- a/real2sim/stage4_retargeting/robot_motion_retargeting.py
++++ b/real2sim/stage4_retargeting/robot_motion_retargeting.py
+@@ -318,6 +318,7 @@ def save_all_results(all_person_results, src_dir, urdf, actuated_joint_names, su
+             person_data["root_quat"][t] = onp.array([wxyz[1], wxyz[2], wxyz[3], wxyz[0]])  # xyzw
+             
+             # Calculate link poses
++            urdf.update_cfg(onp.array(optimized_robot_cfg[t]))
+             for i, link_name in enumerate(link_names):
+                 T_link_base = urdf.get_transform(link_name, urdf.base_link)
+                 T_world_robot_mat = onp.array(T_world_robot.as_matrix())
+@@ -1514,6 +1515,7 @@ def process_retargeting(
+             export_data["root_quat"][t] = onp.array([wxyz[1], wxyz[2], wxyz[3], wxyz[0]])
+             
+             # Calculate link poses
++            urdf.update_cfg(onp.array(optimized_robot_cfg[t]))
+             for i, link_name in enumerate(link_names):
+                 T_link_base = urdf.get_transform(link_name, urdf.base_link)
+                 T_world_robot_mat = onp.array(T_world_robot.as_matrix())
+diff --git a/simulation/videomimic_gym/legged_gym/tensor_utils/replay_data.py b/simulation/videomimic_gym/legged_gym/tensor_utils/replay_data.py
+index cb592b4..bc8b6ea 100644
+--- a/simulation/videomimic_gym/legged_gym/tensor_utils/replay_data.py
++++ b/simulation/videomimic_gym/legged_gym/tensor_utils/replay_data.py
+@@ -528,16 +528,16 @@ class ReplayDataLoader:
+             root_pos = torch.tensor(np.array(replay_data['root_pos']), dtype=torch.float32, device=self.device)
+             root_quat = torch.tensor(np.array(replay_data['root_quat']), dtype=torch.float32, device=self.device)
+ 
++            # root_pos and link_pos are both world coordinates in Stage-4 H5.
++            # Any replay-frame normalization must translate both identically.
++            root_position_offset = torch.zeros_like(root_pos[0])
+             if self.adjust_root_pos:
+-                # Adjust root position: make xy pos relative to first frame and add height offset
+-                root_pos[:, 0:2] -= root_pos[0, 0:2].clone()
+-
++                root_position_offset[0:2] = -root_pos[0, 0:2]
+             if self.reference_height is not None:
+-                relative_z = root_pos[:, 2] - root_pos[0, 2]
+-                root_pos[:, 2] = relative_z + self.reference_height
+-
++                root_position_offset[2] = self.reference_height - root_pos[0, 2]
+             if self.height_direct_offset is not None:
+-                root_pos[:, 2] += self.height_direct_offset
++                root_position_offset[2] += self.height_direct_offset
++            root_pos = root_pos + root_position_offset
+ 
+             # Convert quaternion format if necessary to xyzw as expected
+             # fix this -- we need to do this for all quaternions
+@@ -578,8 +578,7 @@ class ReplayDataLoader:
+                 link_pos = link_pos_in_file[:, [link_names_in_file.index(name) for name in self.link_names]]
+                 link_quat = link_quat_in_file[:, [link_names_in_file.index(name) for name in self.link_names]]
+ 
+-                if self.height_direct_offset is not None:
+-                    link_pos[:, :, 2] += self.height_direct_offset
++                link_pos = link_pos + root_position_offset.view(1, 1, 3)
+ 
+                 # Compute link velocities
+                 link_vel = (link_pos[1:] - link_pos[:-1]) / self.dt  # Shape (seq_len - 1, num_links, 3)
+@@ -608,9 +607,7 @@ class ReplayDataLoader:
+                 extra_link_pos = extra_link_pos_in_file[:, [link_names_in_file.index(name) for name in self.extra_link_names]]
+                 extra_link_quat = extra_link_quat_in_file[:, [link_names_in_file.index(name) for name in self.extra_link_names]]
+ 
+-                if self.height_direct_offset is not None:
+-                    extra_link_pos[:, :, 2] += self.height_direct_offset
+-
++                extra_link_pos = extra_link_pos + root_position_offset.view(1, 1, 3)
+                 # Compute extra link velocities
+                 extra_link_vel = (extra_link_pos[1:] - extra_link_pos[:-1]) / self.dt
+                 extra_link_vel = torch.cat([extra_link_vel, extra_link_vel[-1:]], dim=0)  # Pad last value
+@@ -1221,4 +1218,4 @@ class ReplayDataLoader:
+         else:
+             # Fallback to uniform if something went wrong
+             print("Warning: Sum of adaptive weights is near zero. Falling back to uniform clip weights.")
+-            self.all_weights = self._base_uniform_clip_weights_per_start
+\ No newline at end of file
++            self.all_weights = self._base_uniform_clip_weights_per_start
+diff --git a/simulation/videomimic_gym/legged_gym/utils/helpers.py b/simulation/videomimic_gym/legged_gym/utils/helpers.py
+index 6251433..b41ddc8 100644
+--- a/simulation/videomimic_gym/legged_gym/utils/helpers.py
++++ b/simulation/videomimic_gym/legged_gym/utils/helpers.py
+@@ -211,6 +211,17 @@ def get_load_path(root: str, load_run: str = '', checkpoint: int = -1, multi_gpu
+     Returns:
+         Path to the checkpoint file
+     """
++    local_run = load_run or os.listdir(root)[-1]
++    local_root = os.path.join(root, local_run)
++    if os.path.isdir(local_root):
++        if checkpoint == -1:
++            models = [file for file in os.listdir(local_root) if file.startswith('model_') and file.endswith('.pt')]
++            if not models:
++                raise FileNotFoundError(f"no model_*.pt checkpoints in local run: {local_root}")
++            model = max(models, key=lambda name: int(name.split('_')[-1].split('.')[0]))
++            checkpoint = int(model.split('_')[-1].split('.')[0])
++        return os.path.join(local_root, f'model_{checkpoint}.pt')
++
+     # Try to get wandb path first
+     wandb_path = get_wandb_path(root, load_run, multi_gpu=multi_gpu, multi_gpu_rank=multi_gpu_rank)
+     if wandb_path is not None:

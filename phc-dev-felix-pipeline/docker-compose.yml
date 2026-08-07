@@ -1,0 +1,35 @@
+services:
+  phc:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      additional_contexts:
+        isaacgym_src: ./isaacgym
+    image: phc:latest
+    container_name: phc
+    working_dir: /workspace/PHC
+    stdin_open: true
+    tty: true
+    ipc: host
+    shm_size: "16gb"
+    gpus: all
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: all
+      PYTHONPATH: /workspace/PHC:/workspace/PHC/isaacgym/python:/opt/isaacgym/python
+      LD_LIBRARY_PATH: /opt/conda/lib
+      WANDB_MODE: offline
+    volumes:
+      - type: bind
+        source: ${PHC_CODE_PATH:-./}
+        target: /workspace/PHC
+      - type: bind
+        source: ${PHC_DATA_PATH:-./data}
+        target: /workspace/PHC/data
+      - type: bind
+        source: ${PHC_OUTPUT_PATH:-./output}
+        target: /workspace/PHC/output
+      - type: bind
+        source: ${PHC_RUNS_PATH:-./runs}
+        target: /workspace/PHC/runs
+    command: /bin/bash

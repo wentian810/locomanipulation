@@ -1,0 +1,59 @@
+# Physics ablation: the visibly semantic chair remains a review asset, while
+# Isaac receives only the aligned seat support plane used by this sit contact.
+
+input:
+  dataset_dir: /home/jixingyu/data/animation
+  clip_filter: Ways_to_Jump_+_Sit_+_Fall_Dramatic_clip1
+  min_duration_seconds: 0
+
+output:
+  root: output_dir/sit_contact_scene_static_hard_seat_only_v8
+
+resume:
+  skip_existing: true
+  force_phc: true
+  force_gmr: false
+
+gmr:
+  enabled: false
+
+scene:
+  enabled: true
+  required: true
+  backend: videomimic_nksr
+  source_motion: smoothed
+  physics_motion: final
+  output_subdir: scene_reconstruction
+  work_root: scene_work/sit_contact_pipeline_v1
+  camera:
+    mode: fixed
+    source: gvhmr
+    validate_static: true
+    canonicalization: static_hard
+  videomimic:
+    root: external/VideoMimic/real2sim
+    recon_env: vm1recon
+    human_env: vm1rs
+    gender: auto
+    max_frames: 0
+    meshification_method: nksr
+  robot_bridge:
+    enabled: true
+    source_output_root: output_dir/sit_contact_pilot_v2
+    motion_name: human_motion_static_hard.npz
+    camera_name: gvhmr_camera_static_hard.npz
+  isaac:
+    enabled: true
+    collision_mode: seat_support_only
+  runtime:
+    gpu: 2
+    max_parallel_clips: 1
+    timeout_seconds: 3600
+
+quality_evaluation:
+  enabled: false
+  run_after_stages: []
+
+product:
+  enabled: false
+  export_after_stages: []

@@ -30,6 +30,9 @@ if [ -x "$PY_GMR" ]; then
     PY_GMR_BIN_DIR="$(cd "$(dirname "$PY_GMR")" && pwd)"
     export PATH="${PY_GMR_BIN_DIR}:${PATH}"
 fi
+# Never mix an arbitrary ~/.local SMPL-X/PyTorch extension set into the
+# reproducible Conda environment selected above.
+export PYTHONNOUSERSITE="${PYTHONNOUSERSITE:-1}"
 
 # Source shared GMR defaults — override any value by exporting it before calling this script
 source "${SCRIPT_DIR}/pipeline_defaults.sh"
@@ -42,6 +45,13 @@ GMR_SUPPORT_MAX_VERTICAL_SPEED="${GMR_SUPPORT_MAX_VERTICAL_SPEED:-1.20}"
 GMR_SUPPORT_MIN_CONTACT_RUN="${GMR_SUPPORT_MIN_CONTACT_RUN:-3}"
 GMR_SUPPORT_MAX_CONTACT_GAP="${GMR_SUPPORT_MAX_CONTACT_GAP:-1}"
 GMR_SUPPORT_ROOT_STEP_LIMIT="${GMR_SUPPORT_ROOT_STEP_LIMIT:-0.03}"
+GMR_SUPPORT_APPLY_ROOT_Z="${GMR_SUPPORT_APPLY_ROOT_Z:-0}"
+# A video is eligible for a final 2x2 only when it was rendered from a motion
+# file that passes this continuity gate.  This is deliberately independent of
+# retargeting's support-aware correction above: it prevents stale renders from
+# being presented as evidence for a newer robot_motion.pkl.
+GMR_RENDER_ROOT_MAX_STEP_M="${GMR_RENDER_ROOT_MAX_STEP_M:-0.05}"
+GMR_RENDER_CONTRACT_SCRIPT="${PIPELINE_ROOT}/scripts/scene/write_gmr_render_contract.py"
 
 DRY_RUN="${DRY_RUN:-0}"
 
@@ -520,6 +530,7 @@ log "  object_proxy:     $GMR_OBJECT_PROXY source=$GMR_OBJECT_PROXY_SOURCE ${GMR
 log "  height_mode:      $GMR_HEIGHT_ADJUST_MODE"
 log "  support_contact:  height=${GMR_SUPPORT_CONTACT_HEIGHT:-<default>}m max_vz=${GMR_SUPPORT_MAX_VERTICAL_SPEED:-<default>}m/s"
 log "  camera_source:    $GMR_CAMERA_SOURCE"
+log "  static_scene:     ${GMR_SCENE_MUJOCO_NAME:-<disabled>}"
 log "  relax_orient:     ${GMR_RELAX_ORIENTATION_BODIES:-<none>}"
 log "  include_clips:    ${GMR_SELECTED_CLIPS:-<all>}"
 log "  python:           $PY_GMR"
@@ -537,6 +548,12 @@ fi
 FORCE_WRIST_OVERRIDE_ARG=()
 [ "$GMR_FORCE_HAND_WRIST_ORIENTATION_OVERRIDE" = "1" ] && FORCE_WRIST_OVERRIDE_ARG=(--force_hand_wrist_orientation_override)
 
+SUPPORT_ROOT_Z_ARGS=()
+[ "$GMR_SUPPORT_APPLY_ROOT_Z" = "1" ] && SUPPORT_ROOT_Z_ARGS=(--support_apply_root_z)
+
+if [ "${GMR_REUSE_EXISTING_MOTION:-0}" = "1" ]; then
+    log "Reusing existing robot motion artifacts; skipping SMPL-to-robot retarget"
+else
 (
     cd "$SCRIPT_DIR"
     PYTHONPATH="${SCRIPT_DIR}:${PYTHONPATH:-}" run_logged "$PY_GMR" scripts/smpl_npz_to_robot_headless.py \
@@ -556,10 +573,13 @@ FORCE_WRIST_OVERRIDE_ARG=()
         --height_adjust_mode "$GMR_HEIGHT_ADJUST_MODE" \
         --ground_offset "$GMR_GROUND_OFFSET" \
         --support_contact_height "$GMR_SUPPORT_CONTACT_HEIGHT" \
+        --support_exit_contact_height "$GMR_SUPPORT_EXIT_CONTACT_HEIGHT" \
         --support_max_vertical_speed "$GMR_SUPPORT_MAX_VERTICAL_SPEED" \
+        --support_max_horizontal_speed "$GMR_SUPPORT_MAX_HORIZONTAL_SPEED" \
         --support_min_contact_run "$GMR_SUPPORT_MIN_CONTACT_RUN" \
         --support_max_contact_gap "$GMR_SUPPORT_MAX_CONTACT_GAP" \
         --support_root_step_limit "$GMR_SUPPORT_ROOT_STEP_LIMIT" \
+        "${SUPPORT_ROOT_Z_ARGS[@]}" \
         --smooth_window "$GMR_SMOOTH_WINDOW" \
         --hand_smooth_window "$GMR_HAND_SMOOTH_WINDOW" \
         --hand_smooth_polyorder "$GMR_HAND_SMOOTH_POLYORDER" \
@@ -600,6 +620,7 @@ FORCE_WRIST_OVERRIDE_ARG=()
         "${FORCE_WRIST_OVERRIDE_ARG[@]}" \
         "${OVERRIDE_ARG[@]}"
 )
+fi
 
 if [ "$GMR_SHARPA_HANDS" = "1" ] && [ "$GMR_SHARPA_AUTO_RETARGET" = "1" ]; then
     log "Generating morphology-matched Sharpa hand trajectories"
@@ -682,6 +703,10 @@ if [ "$GMR_BRAINCO_HANDS" = "1" ] && [ "$GMR_BRAINCO_AUTO_RETARGET" = "1" ]; the
 fi
 
 if [ "$GMR_RENDER" = "1" ]; then
+    if [ ! -f "$GMR_RENDER_CONTRACT_SCRIPT" ]; then
+        log "[ERROR] GMR render contract script not found: $GMR_RENDER_CONTRACT_SCRIPT"
+        exit 1
+    fi
     log "Rendering robot videos"
     while IFS= read -r -d '' motion; do
         clip_root="$(dirname "$motion")"
@@ -690,10 +715,22 @@ if [ "$GMR_RENDER" = "1" ]; then
             continue
         fi
         video="${clip_root}/$(clip_video_name "$GMR_RENDER_NAME" "$clip")"
+        RENDER_PREFLIGHT="${clip_root}/gmr_render_preflight.json"
+        RENDER_CONTRACT="${clip_root}/gmr_render_contract.json"
         if [ "$GMR_OVERRIDE" != "1" ] && [ -f "$video" ]; then
-            log "[SKIP] render exists: $video"
+            if [ -f "$RENDER_CONTRACT" ]; then
+                log "[SKIP] render exists with contract: $video"
+            else
+                log "[REJECT] legacy render has no motion/video contract: $video (set GMR_OVERRIDE=1 to rerender)"
+            fi
             continue
         fi
+        PYTHONPATH="${SCRIPT_DIR}:${PYTHONPATH:-}" run_logged "$PY_GMR" \
+            "$GMR_RENDER_CONTRACT_SCRIPT" \
+            --phase preflight \
+            --motion "$motion" \
+            --output "$RENDER_PREFLIGHT" \
+            --max-root-step-m "$GMR_RENDER_ROOT_MAX_STEP_M"
         CAMERA_ARGS=()
         if [ "$GMR_CAMERA_SOURCE" = "gvhmr" ]; then
             CAMERA_PATH="${ORIGINAL_SHOW_ROOT}/${clip}/gvhmr_camera.npz"
@@ -714,6 +751,27 @@ if [ "$GMR_RENDER" = "1" ]; then
                 fi
             else
                 log "[WARN] GVHMR camera not found for ${clip}, falling back to fixed camera"
+            fi
+        fi
+        SCENE_ARGS=()
+        if [ -n "$GMR_SCENE_MUJOCO_NAME" ]; then
+            SCENE_CANDIDATES=()
+            if [[ "$GMR_SCENE_MUJOCO_NAME" = /* ]]; then
+                SCENE_CANDIDATES=("$GMR_SCENE_MUJOCO_NAME")
+            else
+                SCENE_CANDIDATES=(
+                    "${ORIGINAL_SHOW_ROOT}/${clip}/${GMR_SCENE_MUJOCO_NAME}"
+                    "${clip_root}/${GMR_SCENE_MUJOCO_NAME}"
+                )
+            fi
+            for candidate in "${SCENE_CANDIDATES[@]}"; do
+                if [ -f "$candidate" ]; then
+                    SCENE_ARGS=(--scene_mujoco_xml "$candidate")
+                    break
+                fi
+            done
+            if [ "${#SCENE_ARGS[@]}" -eq 0 ]; then
+                log "[WARN] Static scene MJCF not found for ${clip}: $GMR_SCENE_MUJOCO_NAME"
             fi
         fi
         (
@@ -853,8 +911,24 @@ if [ "$GMR_RENDER" = "1" ]; then
                 "${SHARPA_ARGS[@]}" \
                 "${BRAINCO_ARGS[@]}" \
                 "${OBJECT_ARGS[@]}" \
+                "${SCENE_ARGS[@]}" \
                 "${CAMERA_ARGS[@]}"
         )
+        MANIFEST_ARGS=()
+        if [ -f "${clip_root}/run_manifest.json" ]; then
+            MANIFEST_ARGS=(--run-manifest "${clip_root}/run_manifest.json")
+        fi
+        PYTHONPATH="${SCRIPT_DIR}:${PYTHONPATH:-}" run_logged "$PY_GMR" \
+            "$GMR_RENDER_CONTRACT_SCRIPT" \
+            --phase final \
+            --motion "$motion" \
+            --video "$video" \
+            --preflight "$RENDER_PREFLIGHT" \
+            --output "$RENDER_CONTRACT" \
+            --max-root-step-m "$GMR_RENDER_ROOT_MAX_STEP_M" \
+            --render-mode "$GMR_RENDER_MODE" \
+            --camera-source "$GMR_CAMERA_SOURCE" \
+            "${MANIFEST_ARGS[@]}"
     done < <(find "$OUT_ROOT" -type f -name "$GMR_OUTPUT_NAME" -print0 | sort -z)
 fi
 
@@ -871,9 +945,14 @@ if [ "$GMR_COMPOSITE" = "1" ]; then
                 continue
             fi
             gmr_video="${clip_root}/$(clip_video_name "$GMR_RENDER_NAME" "$clip")"
+            render_contract="${clip_root}/gmr_render_contract.json"
             # Name composite video using standard name (clip context is already in the path)
             composite_video="${clip_root}/$(clip_video_name "$GMR_COMPOSITE_NAME" "$clip")"
 
+            if [ ! -f "$render_contract" ]; then
+                log "[REJECT] ${clip}: GMR video has no eligible render contract; skip composite"
+                continue
+            fi
             if [ "$GMR_OVERRIDE" != "1" ] && [ -f "$composite_video" ]; then
                 log "[SKIP] composite exists: $composite_video"
                 continue

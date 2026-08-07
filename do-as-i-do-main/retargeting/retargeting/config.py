@@ -574,18 +574,22 @@ def process_config(config: Config):
             config.right_pos_ctrl_ids, config.left_pos_ctrl_ids = (
                 get_object_pos_ctrl_indices(config)
             )
+        # Soft hand--object contact reward needs the same hand-tip sites as
+        # actuator-based guidance, but does not require converting free joints
+        # to an artificial object actuator scene.
+        if needs_act or config.contact_rew_scale > 0.0:
             config.contact_order, config.hand_contact_site_ids = (
                 build_hand_contact_site_ids(model, config.embodiment_type)
             )
             config.right_contact_indices = [
                 idx
                 for idx, (side, finger) in enumerate(config.contact_order)
-                if (side == "right") and (finger in ["thumb"])
+                if side == "right"
             ]
             config.left_contact_indices = [
                 idx
                 for idx, (side, finger) in enumerate(config.contact_order)
-                if side == "left" and (finger in ["thumb"])
+                if side == "left"
             ]
 
     if config.warmup_steps > 0 and config.simulator == "mjwp":

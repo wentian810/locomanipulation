@@ -1,0 +1,336 @@
+diff --git a/holomotion/src/evaluation/eval_mujoco_sim2sim.py b/holomotion/src/evaluation/eval_mujoco_sim2sim.py
+index 8ddc67d..b8c5296 100644
+--- a/holomotion/src/evaluation/eval_mujoco_sim2sim.py
++++ b/holomotion/src/evaluation/eval_mujoco_sim2sim.py
+@@ -15,6 +15,7 @@
+ # permissions and limitations under the License.
+ 
+ 
++import json
+ import os
+ import csv
+ import shutil
+@@ -82,6 +83,16 @@ DEFAULT_FEET_BODY_NAMES = {
+     "left": ["left_ankle_roll_link"],
+     "right": ["right_ankle_roll_link"],
+ }
++SEMANTIC_CHAIR_GEOM_NAMES = frozenset(
++    {
++        "seat_support_geom",
++        "backrest_geom",
++        "leg_front_left_geom",
++        "leg_front_right_geom",
++        "leg_back_left_geom",
++        "leg_back_right_geom",
++    }
++)
+ 
+ 
+ def _coerce_config_bool(value, default: bool = False) -> bool:
+@@ -432,6 +443,9 @@ class MujocoEvaluator:
+         self._robot_global_rotation_quat_seq: list[np.ndarray] = []
+         self._robot_global_velocity_seq: list[np.ndarray] = []
+         self._robot_global_angular_velocity_seq: list[np.ndarray] = []
++        self._semantic_chair_contact_count_seq: list[np.int32] = []
++        self._semantic_seat_normal_force_seq: list[np.float32] = []
++        self._semantic_chair_min_contact_distance_seq: list[np.float32] = []
+         self._robot_moe_expert_indices_seq: list[np.ndarray] = []
+         self._robot_moe_expert_logits_seq: list[np.ndarray] = []
+         self._prev_recorded_dof_vel_ref: np.ndarray | None = None
+@@ -440,6 +454,27 @@ class MujocoEvaluator:
+             self.policy_action_delay_step,
+             self.action_delay_type,
+         ) = self._get_action_delay_cfg()
++        # Optional evaluation-only post-seat control.  A scene-aware reference
++        # generator can nominate a frame at which a verified seated pose has
++        # been reached.  From that frame the controller is either released
++        # (scale=0) or uniformly softened; it never writes the free base or
++        # applies an external pelvis force.  ``-1`` retains official frozen
++        # policy control everywhere.
++        self.passive_release_start_frame = int(
++            self.config.get("passive_release_start_frame", -1)
++        )
++        if self.passive_release_start_frame < -1:
++            raise ValueError("passive_release_start_frame must be -1 or a non-negative frame index")
++        self.post_release_torque_scale = float(
++            self.config.get("post_release_torque_scale", 1.0)
++        )
++        if not 0.0 <= self.post_release_torque_scale <= 1.0:
++            raise ValueError("post_release_torque_scale must be in [0, 1]")
++        self.post_release_target_mode = str(
++            self.config.get("post_release_target_mode", "policy")
++        ).strip().lower()
++        if self.post_release_target_mode not in {"policy", "reference_pd"}:
++            raise ValueError("post_release_target_mode must be 'policy' or 'reference_pd'")
+         self._policy_action_delay_buffer: deque[np.ndarray] = deque(
+             maxlen=max(1, self.policy_action_delay_step + 1)
+         )
+@@ -1941,6 +1976,7 @@ class MujocoEvaluator:
+         - robot_global_rotation_quat: [T, num_bodies, 4] (XYZW)
+         - robot_global_velocity: [T, num_bodies, 3]
+         - robot_global_angular_velocity: [T, num_bodies, 3]
++        - semantic_*: actual static-chair contacts sampled before each policy step
+         """
+         motion_npz_path = self.config.get("motion_npz_path", None)
+         if motion_npz_path is None:
+@@ -1979,6 +2015,15 @@ class MujocoEvaluator:
+         robot_action_rate = np.asarray(
+             self._robot_action_rate_seq, dtype=np.float32
+         )
++        semantic_chair_contact_count = np.asarray(
++            self._semantic_chair_contact_count_seq, dtype=np.int32
++        )
++        semantic_seat_normal_force = np.asarray(
++            self._semantic_seat_normal_force_seq, dtype=np.float32
++        )
++        semantic_chair_min_contact_distance = np.asarray(
++            self._semantic_chair_min_contact_distance_seq, dtype=np.float32
++        )
+ 
+         robot_global_translation = np.stack(
+             self._robot_global_translation_seq, axis=0
+@@ -2030,6 +2075,28 @@ class MujocoEvaluator:
+             self.simulation_dt, dtype=np.float32
+         )
+         data_dict["robot_action_rate"] = robot_action_rate
++        data_dict["semantic_chair_contact_count"] = semantic_chair_contact_count
++        data_dict["semantic_seat_normal_force_n"] = semantic_seat_normal_force
++        data_dict["semantic_chair_min_contact_distance_m"] = (
++            semantic_chair_min_contact_distance
++        )
++        data_dict["runtime_control_contract"] = np.asarray(json.dumps({
++            "pre_release": "frozen_holomotion_onnx_pd",
++            "passive_release_start_frame": int(self.passive_release_start_frame),
++            "post_release_torque_scale": float(self.post_release_torque_scale),
++            "post_release_target_mode": self.post_release_target_mode,
++            "post_release": (
++                "zero_actuator_torque_gravity_and_static_scene_only"
++                if self.passive_release_start_frame >= 0 and self.post_release_torque_scale == 0.0
++                else "uniformly_scaled_internal_pd_torque"
++                if self.passive_release_start_frame >= 0
++                else "frozen_holomotion_onnx_pd"
++            ),
++            "forbidden": [
++                "per_frame_qpos_reset", "xfrc_applied", "mocap_weld",
++                "moving_scene_geometry",
++            ],
++        }, ensure_ascii=False))
+         data_dict["robot_global_translation"] = robot_global_translation
+         data_dict["robot_global_rotation_quat"] = robot_global_rotation_quat
+         data_dict["robot_global_velocity"] = robot_global_velocity
+@@ -2109,35 +2176,51 @@ class MujocoEvaluator:
+                 torque_ref = np.zeros(
+                     len(self.dof_names_ref_motion), dtype=np.float32
+                 )
+-            current_dof_pos = self.robot_dof_pos
+-            current_dof_vel = self.robot_dof_vel
+-            for name, act_idx in self.actuator_name_to_index.items():
+-                mu_idx = self.actuator_name_to_mu_idx[name]
+-                joint_name = self.mjcf_dof_names[mu_idx]
+-                target_q = self.target_dof_pos_by_name.get(
+-                    joint_name,
+-                    float(self.default_angles_mu[mu_idx]),
+-                )
+-                target_dq = 0.0
+-                feedforward_tau = 0.0
+-                kp = self.kps_mu[mu_idx]
+-                kd = self.kds_mu[mu_idx]
+-                current_q = current_dof_pos[mu_idx]
+-                current_dq = current_dof_vel[mu_idx]
+-                tau = (
+-                    feedforward_tau
+-                    + kp * (target_q - current_q)
+-                    + kd * (target_dq - current_dq)
+-                )
+-                if (
+-                    act_idx in self.actuator_force_range
+-                    and self.actuator_force_range[act_idx] is not None
+-                ):
+-                    min_force, max_force = self.actuator_force_range[act_idx]
+-                    tau = np.clip(tau, min_force, max_force)
+-                self.d.ctrl[mu_idx] = tau
+-                if record_low_level_torque:
+-                    torque_ref[self.mu_to_ref[mu_idx]] = np.float32(tau)
++            post_release = (
++                self.passive_release_start_frame >= 0
++                and self.motion_frame_idx >= self.passive_release_start_frame
++            )
++            if post_release and self.post_release_torque_scale == 0.0:
++                # This is intentionally not gravity compensation: zero is the
++                # only command, leaving an actual seat reaction as the sole
++                # source of vertical support.
++                self.d.ctrl[:] = 0.0
++            else:
++                current_dof_pos = self.robot_dof_pos
++                current_dof_vel = self.robot_dof_vel
++                for name, act_idx in self.actuator_name_to_index.items():
++                    mu_idx = self.actuator_name_to_mu_idx[name]
++                    joint_name = self.mjcf_dof_names[mu_idx]
++                    target_q = self.target_dof_pos_by_name.get(
++                        joint_name,
++                        float(self.default_angles_mu[mu_idx]),
++                    )
++                    target_dq = 0.0
++                    feedforward_tau = 0.0
++                    kp = self.kps_mu[mu_idx]
++                    kd = self.kds_mu[mu_idx]
++                    current_q = current_dof_pos[mu_idx]
++                    current_dq = current_dof_vel[mu_idx]
++                    tau = (
++                        feedforward_tau
++                        + kp * (target_q - current_q)
++                        + kd * (target_dq - current_dq)
++                    )
++                    if post_release:
++                        # Uniformly soften all *internal* joint torques after
++                        # the seat cue.  This cannot create an external base
++                        # force; the chair reaction is still solved solely by
++                        # MuJoCo contact under the robot's own gravity.
++                        tau *= self.post_release_torque_scale
++                    if (
++                        act_idx in self.actuator_force_range
++                        and self.actuator_force_range[act_idx] is not None
++                    ):
++                        min_force, max_force = self.actuator_force_range[act_idx]
++                        tau = np.clip(tau, min_force, max_force)
++                    self.d.ctrl[mu_idx] = tau
++                    if record_low_level_torque:
++                        torque_ref[self.mu_to_ref[mu_idx]] = np.float32(tau)
+ 
+             mujoco.mj_step(self.m, self.d)
+             if record_low_level_torque:
+@@ -2170,6 +2253,11 @@ class MujocoEvaluator:
+                 + kp * (target_q - current_q)
+                 + kd * (target_dq - current_dq)
+             )
++            if (
++                self.passive_release_start_frame >= 0
++                and self.motion_frame_idx >= self.passive_release_start_frame
++            ):
++                tau *= self.post_release_torque_scale
+             if (
+                 act_idx in self.actuator_force_range
+                 and self.actuator_force_range[act_idx] is not None
+@@ -3146,6 +3234,65 @@ class MujocoEvaluator:
+         self._robot_global_rotation_quat_seq.append(rot)
+         self._robot_global_velocity_seq.append(vel)
+         self._robot_global_angular_velocity_seq.append(ang_vel)
++        (
++            chair_contact_count,
++            seat_normal_force,
++            chair_min_contact_distance,
++        ) = self._semantic_chair_contact_metrics()
++        self._semantic_chair_contact_count_seq.append(
++            np.int32(chair_contact_count)
++        )
++        self._semantic_seat_normal_force_seq.append(
++            np.float32(seat_normal_force)
++        )
++        self._semantic_chair_min_contact_distance_seq.append(
++            np.float32(chair_min_contact_distance)
++        )
++
++    def _semantic_chair_contact_metrics(self) -> tuple[int, float, float]:
++        """Measure only actual robot--semantic-chair contacts at this state.
++
++        The method does not infer support from reference poses.  With no
++        imported chair (the floor-only prerequisite), it deterministically
++        returns zeros.  A zero minimum distance is deliberate: the V24 audit
++        separately performs exact zero-cutoff geometry penetration checks.
++        """
++        chair_geom_ids = {
++            geom_id
++            for geom_id in range(self.m.ngeom)
++            if (
++                mujoco.mj_id2name(self.m, mujoco.mjtObj.mjOBJ_GEOM, geom_id)
++                in SEMANTIC_CHAIR_GEOM_NAMES
++            )
++        }
++        if not chair_geom_ids:
++            return 0, 0.0, 0.0
++        seat_geom_id = mujoco.mj_name2id(
++            self.m, mujoco.mjtObj.mjOBJ_GEOM, "seat_support_geom"
++        )
++        count = 0
++        seat_normal_force = 0.0
++        minimum_distance = 0.0
++        contact_wrench = np.zeros(6, dtype=np.float64)
++        for contact_index in range(self.d.ncon):
++            contact = self.d.contact[contact_index]
++            pair = {int(contact.geom1), int(contact.geom2)}
++            chair_members = pair & chair_geom_ids
++            if not chair_members:
++                continue
++            other_members = pair - chair_members
++            if not other_members:
++                continue
++            # World geoms (floor and static chair) are not robot contacts.
++            if any(int(self.m.geom_bodyid[geom_id]) == 0 for geom_id in other_members):
++                continue
++            mujoco.mj_contactForce(self.m, self.d, contact_index, contact_wrench)
++            normal_force = max(0.0, float(contact_wrench[0]))
++            count += 1
++            minimum_distance = min(minimum_distance, float(contact.dist))
++            if seat_geom_id in chair_members:
++                seat_normal_force += normal_force
++        return count, seat_normal_force, minimum_distance
+ 
+     def load_specific_motion(self, npz_path):
+         with np.load(npz_path, allow_pickle=True) as npz:
+@@ -3249,6 +3396,9 @@ class MujocoEvaluator:
+         self._robot_global_rotation_quat_seq = []
+         self._robot_global_velocity_seq = []
+         self._robot_global_angular_velocity_seq = []
++        self._semantic_chair_contact_count_seq = []
++        self._semantic_seat_normal_force_seq = []
++        self._semantic_chair_min_contact_distance_seq = []
+         self._robot_moe_expert_indices_seq = []
+         self._robot_moe_expert_logits_seq = []
+         self._reset_onnx_io_dump_buffers()
+@@ -3298,6 +3448,15 @@ class MujocoEvaluator:
+             "robot_action_rate": np.asarray(
+                 self._robot_action_rate_seq, dtype=np.float32
+             ),
++            "semantic_chair_contact_count": np.asarray(
++                self._semantic_chair_contact_count_seq, dtype=np.int32
++            ),
++            "semantic_seat_normal_force_n": np.asarray(
++                self._semantic_seat_normal_force_seq, dtype=np.float32
++            ),
++            "semantic_chair_min_contact_distance_m": np.asarray(
++                self._semantic_chair_min_contact_distance_seq, dtype=np.float32
++            ),
+             "robot_global_translation": np.stack(
+                 self._robot_global_translation_seq
+             ),
+@@ -3676,11 +3835,25 @@ class MujocoEvaluator:
+                 np.stack(step_logits, axis=0)
+             )
+ 
+-        self.target_dof_pos_onnx = (
+-            self.actions_onnx * self.action_scale_onnx
+-            + self.default_angles_onnx
+-        )
+-        self.target_dof_pos_mu = self.target_dof_pos_onnx[self.onnx_to_mu]
++        post_release_reference_pd = (
++            self.post_release_target_mode == "reference_pd"
++            and self.passive_release_start_frame >= 0
++            and self.motion_frame_idx >= self.passive_release_start_frame
++        )
++        if post_release_reference_pd:
++            # The physical-seat reference terminates at a separately
++            # gravity-tested qpos.  Use only its named joint angles as a
++            # low-gain internal posture target; the free base is never set.
++            self.target_dof_pos_mu = self.ref_dof_pos[
++                self.motion_frame_idx, self.mu_to_ref
++            ].astype(np.float32)
++            self.target_dof_pos_onnx = self.target_dof_pos_mu[self.mu_to_onnx]
++        else:
++            self.target_dof_pos_onnx = (
++                self.actions_onnx * self.action_scale_onnx
++                + self.default_angles_onnx
++            )
++            self.target_dof_pos_mu = self.target_dof_pos_onnx[self.onnx_to_mu]
+         for i, dof_name in enumerate(self.mjcf_dof_names):
+             self.target_dof_pos_by_name[dof_name] = float(
+                 self.target_dof_pos_mu[i]

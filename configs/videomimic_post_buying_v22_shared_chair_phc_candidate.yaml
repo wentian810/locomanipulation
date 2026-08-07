@@ -1,0 +1,72 @@
+# Isolated PHC control experiment.  Unlike V21's seat-only proxy, Isaac and
+# MuJoCo consume the exact same six semantic chair boxes, hash- and
+# world-corner-attested.  Raw NKSR mesh collision remains prohibited.
+input:
+  dataset_dir: /home/jixingyu/data/animation
+  clip_filter: Ways_to_Jump_+_Sit_+_Fall_Buying_a_Chair_clip1
+  min_duration_seconds: 0
+  max_videos: 1
+
+output:
+  root: output_dir/videomimic_post_buying_v22_shared_chair_phc_candidate
+
+runtime:
+  cuda_visible_devices: "4"
+
+phc:
+  enabled: true
+
+gmr:
+  enabled: false
+  source: final
+
+scene:
+  enabled: true
+  required: true
+  backend: videomimic_nksr
+  source_motion: smoothed
+  output_subdir: scene_reconstruction_v20_auto_semantic_chair
+  camera:
+    mode: fixed
+    source: gvhmr
+    validate_static: true
+    freeze_method: robust_median
+    retain_raw_trajectory: true
+    canonicalization: static_optimized
+  # Metadata only: reuse the immutable, hash-recorded V20 reconstruction.
+  videomimic:
+    root: external/VideoMimic/real2sim
+    recon_env: vm1recon
+    human_env: vm1rs
+    gender: auto
+    human_mask_mode: sam2
+    max_frames: 0
+    frame_stride: 1
+    meshification_method: nksr
+    stage4:
+      enabled: false
+  robot_bridge:
+    enabled: true
+    # Reuse V21's read-only bridge: its motion and camera SHA are already
+    # recorded and must not be recomputed for an asset-only PHC experiment.
+    source_output_root: output_dir/videomimic_source_buying_v21_semantic_phc
+    source_scene_subdir: scene_reconstruction_v20_auto_semantic_chair
+    motion_name: human_motion_static_hard.npz
+    camera_name: gvhmr_camera_static_hard.npz
+  isaac:
+    enabled: true
+    collision_mode: semantic_primitives_only
+    semantic_preflight_report: scene_work/semantic_auto_layout_buying_v20/physics_preflight_v2_cleanenv/full_semantic_phc_preflight_v2.json
+    scene_asset_contract_report: scene_work/semantic_auto_layout_buying_v20/physics_preflight_v2_cleanenv/full_semantic_asset_contract_v2.json
+    allow_global_floor_fix: false
+  physics:
+    enabled: false
+  runtime:
+    gpu: 4
+    max_parallel_clips: 1
+    timeout_seconds: 21600
+
+resume:
+  skip_existing: false
+  force_phc: true
+  force_gmr: false

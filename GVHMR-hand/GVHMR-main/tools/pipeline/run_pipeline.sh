@@ -33,6 +33,12 @@ SKIP_EXISTING="${SKIP_EXISTING:-1}"
 FORCE_PHC="${FORCE_PHC:-0}"
 FORCE_LOCO="${FORCE_LOCO:-0}"
 FORCE_SMOOTH="${FORCE_SMOOTH:-0}"
+# A scene-aligned continuation supplies 001_smoothed.npz and the matching
+# camera explicitly.  It must never revisit GVHMR, conversion, locomotion, or
+# temporal smoothing, otherwise those stages overwrite the static-coordinate
+# source motion before PHC/GMR consume it.
+PIPELINE_POST_ONLY="${PIPELINE_POST_ONLY:-0}"
+SMOOTH_RAN=0  # invariant for both full and scene-post-only execution paths
 MAX_FRAMES="${MAX_FRAMES:-0}"
 COMPARISON_FPS="${COMPARISON_FPS:-30}"
 PANEL_SIZE="${PANEL_SIZE:-600}"
@@ -316,15 +322,19 @@ LOCO_NPZ="$LOCO_OUT/optimizer/results_filter/001/001_optimized.npz"
 SMOOTH_NPZ="$WORK/001_smoothed.npz"
 FINAL_NPZ="$WORK/001_final.npz"
 FINAL_SELECTION_JSON="$WORK/final_motion_selection.json"
+PHC_ATTEMPTS="$WORK/phc_attempts.jsonl"
 
 PHC_IN="$WORK/phc_in"
 PHC_OUT="$WORK/phc_repaired"
 PHC_RENDERINGS="$WORK/phc_renderings"
+# Recorded-state evidence; a completed process alone is not a PHC success.
+PHC_TRACKING_AUDIT="$WORK/phc_states/001/001_optimized_tracking_audit.json"
 PHC_GROUNDED_NPZ="$WORK/001_phc_grounded.npz"
 PHC_SMOOTH_NPZ="$WORK/001_phc_smoothed.npz"
 PHC_SMOOTH_GROUNDED_NPZ="$WORK/001_phc_smoothed_grounded.npz"
 PHC_SMOOTH_REPORT="$WORK/001_phc_smoothed_report.json"
 PHC_RAN=0
+PHC_ATTEMPT_ID=""
 
 COMPARISON_MP4="$WORK/${VIDEO_NAME}_comparison.mp4"
 
@@ -352,6 +362,71 @@ find_latest_repaired_npz() {
     find "$root" -name "*_validated.npz" -printf '%T@ %p\n' 2>/dev/null
 }
 
+phc_tracking_pass() {
+    local report="$1"
+    [ -f "$report" ] && grep -Eq '"status"[[:space:]]*:[[:space:]]*"passed"' "$report"
+}
+
+append_phc_attempt() {
+    # The selected final motion is a current-state pointer; this append-only
+    # ledger preserves every PHC outcome, including an intentional SKIP_PHC
+    # rerun after a previous tracking rejection.
+    local outcome="$1"
+    local tracking_status="missing"
+    if [ -f "$PHC_TRACKING_AUDIT" ]; then
+        tracking_status="$(grep -Eo '"status"[[:space:]]*:[[:space:]]*"[^"]+"' "$PHC_TRACKING_AUDIT" | head -1 | sed -E 's/.*"([^"]+)"$/\1/' || true)"
+        [ -n "$tracking_status" ] || tracking_status="unreadable"
+    fi
+    if [ -z "$PHC_ATTEMPT_ID" ]; then
+        PHC_ATTEMPT_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$-${RANDOM}"
+    fi
+    PHC_ATTEMPT_ID="$PHC_ATTEMPT_ID" \
+    PHC_ATTEMPT_OUTCOME="$outcome" \
+    PHC_TRACKING_STATUS="$tracking_status" \
+    PHC_ATTEMPTS_PATH="$PHC_ATTEMPTS" \
+    PHC_INPUT_PATH="$FINAL_PRE_NPZ" \
+    PHC_PRIMITIVE_PATH="$PHC_PRIMITIVE" \
+    PHC_COMPOSER_PATH="$PHC_COMPOSER" \
+    PHC_TRACKING_PATH="$PHC_TRACKING_AUDIT" \
+    PHC_OVERRIDES="$PHC_EXTRA_OVERRIDES" \
+    "$PY_LOCO" - <<'PY' || warn "Could not append PHC attempt ledger"
+import datetime
+import hashlib
+import json
+import os
+from pathlib import Path
+
+
+def digest(value: str):
+    path = Path(value)
+    if not path.is_file():
+        return None
+    hasher = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            hasher.update(block)
+    return hasher.hexdigest()
+
+
+ledger = Path(os.environ["PHC_ATTEMPTS_PATH"])
+ledger.parent.mkdir(parents=True, exist_ok=True)
+record = {
+    "schema_version": 1,
+    "attempt_id": os.environ["PHC_ATTEMPT_ID"],
+    "timestamp_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    "outcome": os.environ["PHC_ATTEMPT_OUTCOME"],
+    "input_sha256": digest(os.environ["PHC_INPUT_PATH"]),
+    "primitive_checkpoint_sha256": digest(os.environ["PHC_PRIMITIVE_PATH"]),
+    "composer_checkpoint_sha256": digest(os.environ["PHC_COMPOSER_PATH"]),
+    "hydra_overrides": os.environ.get("PHC_OVERRIDES", ""),
+    "tracking_report": os.environ["PHC_TRACKING_PATH"],
+    "tracking_status": os.environ["PHC_TRACKING_STATUS"],
+}
+with ledger.open("a", encoding="utf-8") as stream:
+    stream.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+PY
+}
+
 require_file() {
     [ -e "$1" ] || { err "$2 not found: $1"; exit 1; }
 }
@@ -369,9 +444,15 @@ run_phc_python() {
     [ -n "$phc_prefix" ] && ld_paths="${phc_prefix}/lib:${ld_paths}"
     [ -d "$phc_bindings" ] && ld_paths="${phc_bindings}:${ld_paths}"
 
+    # A caller's conda cross-compiler can hide host system headers from the
+    # Isaac Gym JIT extension. Prefer host compilers unless explicitly set.
+    local phc_cc="${PHC_CC:-gcc}"
+    local phc_cxx="${PHC_CXX:-g++}"
     env \
         LD_LIBRARY_PATH="$ld_paths" \
         PATH="${phc_prefix}/bin:${PATH:-}" \
+        CC="$phc_cc" \
+        CXX="$phc_cxx" \
         PYTHONPATH="${PHC}:${PHC}/isaacgym/python:${PYTHONPATH:-}" \
         ISAACGYM_PATH="${PHC}/isaacgym" \
         "$PY_PHC" "$@"
@@ -405,9 +486,10 @@ ground_fix_npz() {
 publish_final_motion() {
     local selected="$1"
     local reason="$2"
-    local selected_real stage link_tmp json_tmp
+    local selected_real selected_sha256 stage link_tmp json_tmp
     [ -f "$selected" ] || { err "final motion source is missing: $selected"; exit 1; }
     selected_real="$(realpath "$selected")"
+    selected_sha256="$(sha256sum "$selected_real" | awk '{print $1}')"
     case "$(basename "$selected_real")" in
         001_phc_smoothed_grounded.npz) stage="phc_smoothed_grounded" ;;
         001_phc_smoothed.npz) stage="phc_smoothed" ;;
@@ -421,8 +503,8 @@ publish_final_motion() {
     rm -f -- "$link_tmp" "$json_tmp"
     ln -s "$selected_real" "$link_tmp"
     mv -fT "$link_tmp" "$FINAL_NPZ"
-    printf '{"schema_version":1,"selected_stage":"%s","selection_reason":"%s","selected_file":"%s"}\n' \
-        "$stage" "$reason" "$(basename "$selected_real")" > "$json_tmp"
+    printf '{"schema_version":2,"selected_stage":"%s","selection_reason":"%s","selected_file":"%s","selected_sha256":"%s","phc_attempt_id":"%s"}\n' \
+        "$stage" "$reason" "$(basename "$selected_real")" "$selected_sha256" "${PHC_ATTEMPT_ID:-not_attempted}" > "$json_tmp"
     mv -fT "$json_tmp" "$FINAL_SELECTION_JSON"
     ok "Final motion selection: $stage ($reason) -> $FINAL_NPZ"
 }
@@ -441,6 +523,18 @@ elif [ "$GVHMR_HAND_BACKEND" = "hand4wholepp" ]; then
     log "Hand4Whole++ root: $GVHMR_HAND4WHOLEPP_ROOT"
 fi
 mkdir -p "$WORK" "$GVHMR_OUT" "$LOCO_IN/001" "$PHC_IN/001" "$PHC_OUT/001"
+
+if [ "$PIPELINE_POST_ONLY" = "1" ]; then
+    require_file "$SMOOTH_NPZ" "scene-aligned 001_smoothed.npz"
+    require_file "$GVHMR_HANDS_NPZ" "preserved hand sidecar"
+    if [ "$USE_GVHMR_CAMERA" = "1" ]; then
+        require_file "$GVHMR_CAMERA_NPZ" "scene-aligned GVHMR camera"
+    fi
+    LOCO_SOURCE="$SMOOTH_NPZ"
+    LOCO_NPZ="$SMOOTH_NPZ"
+    FINAL_PRE_NPZ="$SMOOTH_NPZ"
+    log "[SCENE_POST] reusing canonical motion; skipping GVHMR/Locomotion/Smoothing"
+else
 
 # generate_smplxs caches ViTPose, ViT features, and MANO sidecars below the
 # per-video GVHMR directory.  A work-video re-encode (for example 25 -> 30
@@ -1204,6 +1298,8 @@ if [ "$USE_GVHMR_CAMERA" = "1" ]; then
     fi
 fi
 
+fi  # PIPELINE_POST_ONLY
+
 # ---------------------------------------------------------------------------
 # Stage 4: PHC repair
 # ---------------------------------------------------------------------------
@@ -1212,16 +1308,26 @@ FINAL_SELECTION_REASON="phc_not_run_fallback_smoothed"
 if [ "$SKIP_PHC" = "1" ]; then
     warn "Skipping PHC (SKIP_PHC=1)"
     FINAL_SELECTION_REASON="phc_disabled_fallback_smoothed"
+    append_phc_attempt "phc_skipped"
 elif [ "$SKIP_EXISTING" = "1" ] && [ "$FORCE_PHC" != "1" ] && \
-     [ "$SMOOTH_RAN" != "1" ] && [ -f "$PHC_SMOOTH_GROUNDED_NPZ" ]; then
+     [ -f "$PHC_TRACKING_AUDIT" ] && ! phc_tracking_pass "$PHC_TRACKING_AUDIT"; then
+    warn "Cached PHC rollout was rejected by its recorded-state tracking audit"
+    FINAL_SELECTION_REASON="phc_cached_tracking_rejected_fallback_smoothed"
+    append_phc_attempt "phc_tracking_rejected"
+elif [ "$SKIP_EXISTING" = "1" ] && [ "$FORCE_PHC" != "1" ] && \
+     [ "$SMOOTH_RAN" != "1" ] && [ -f "$PHC_SMOOTH_GROUNDED_NPZ" ] && \
+     phc_tracking_pass "$PHC_TRACKING_AUDIT"; then
     FINAL_POST_NPZ="$PHC_SMOOTH_GROUNDED_NPZ"
     FINAL_SELECTION_REASON="phc_cached"
     ok "PHC smoothed grounded already exists: $FINAL_POST_NPZ"
+    append_phc_attempt "phc_accepted"
 elif [ "$SKIP_EXISTING" = "1" ] && [ "$FORCE_PHC" != "1" ] && \
-     [ "$SMOOTH_RAN" != "1" ] && [ -f "$PHC_GROUNDED_NPZ" ]; then
+     [ "$SMOOTH_RAN" != "1" ] && [ -f "$PHC_GROUNDED_NPZ" ] && \
+     phc_tracking_pass "$PHC_TRACKING_AUDIT"; then
     FINAL_POST_NPZ="$PHC_GROUNDED_NPZ"
     FINAL_SELECTION_REASON="phc_cached"
     ok "PHC grounded already exists: $FINAL_POST_NPZ"
+    append_phc_attempt "phc_accepted"
 else
     log ""
     log "[4/5] PHC physical repair"
@@ -1282,23 +1388,44 @@ else
         "${PHC_RECOVERY_ARGS[@]}" "${PHC_POST_CHECK_ARGS[@]}" "${PHC_HYDRA_ARGS[@]}" 2>&1; then
         ok "PHC complete"
         REPAIRED="$(find_latest_repaired_npz "$PHC_OUT" | sort -nr | head -1 | cut -d' ' -f2-)"
+        PHC_TRACKING_REJECTED=0
+        if [ -n "$REPAIRED" ] && ! phc_tracking_pass "$PHC_TRACKING_AUDIT"; then
+            warn "PHC output exists but failed/missed the recorded-state tracking gate"
+            REPAIRED=""
+            PHC_TRACKING_REJECTED=1
+            FINAL_SELECTION_REASON="phc_tracking_gate_failed_fallback_smoothed"
+            append_phc_attempt "phc_tracking_rejected"
+        fi
         if [ -n "$REPAIRED" ]; then
             FINAL_POST_NPZ="$REPAIRED"
             PHC_RAN=1
             FINAL_SELECTION_REASON="phc_repaired"
             ok "PHC output: $FINAL_POST_NPZ"
             ground_fix_npz "$FINAL_POST_NPZ" "$PHC_GROUNDED_NPZ" "PHC export"
+            append_phc_attempt "phc_accepted"
+        elif [ "$PHC_TRACKING_REJECTED" = "1" ]; then
+            printf '{"status":"degraded","stage":"phc","actual":"smoothed","reason":"phc_tracking_rejected"}
+' > "${WORK}/stage_status.json"
         else
             warn "No repaired output found; using pre-PHC NPZ"
             FINAL_SELECTION_REASON="phc_no_output_fallback_smoothed"
             printf '{"status":"degraded","stage":"phc","actual":"smoothed","reason":"phc_no_repaired_output"}
 ' > "${WORK}/stage_status.json"
+            append_phc_attempt "phc_no_output"
         fi
     else
         warn "PHC failed; using pre-PHC NPZ"
-        FINAL_SELECTION_REASON="phc_runtime_failed_fallback_smoothed"
-        printf '{"status":"degraded","stage":"phc","actual":"smoothed","reason":"phc_runtime_failed"}
+        if [ -f "$PHC_TRACKING_AUDIT" ] && ! phc_tracking_pass "$PHC_TRACKING_AUDIT"; then
+            FINAL_SELECTION_REASON="phc_tracking_rejected_fallback_smoothed"
+            printf '{"status":"degraded","stage":"phc","actual":"smoothed","reason":"phc_tracking_rejected"}
 ' > "${WORK}/stage_status.json"
+            append_phc_attempt "phc_tracking_rejected"
+        else
+            FINAL_SELECTION_REASON="phc_runtime_failed_fallback_smoothed"
+            printf '{"status":"degraded","stage":"phc","actual":"smoothed","reason":"phc_runtime_failed"}
+' > "${WORK}/stage_status.json"
+            append_phc_attempt "phc_runtime_failed"
+        fi
     fi
 fi
 

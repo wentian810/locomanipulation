@@ -507,15 +507,6 @@ def build_unitree_sharpa_visual_xml(
     root = tree.getroot()
     strip_native_g1_hand_visuals(root)
     ensure_sharpa_assets(root, sharpa_root, scale)
-    # The release runner intentionally mounts the robot assets read-only.  The
-    # generated XML may therefore live in /tmp, but MuJoCo must still resolve
-    # the original relative meshdir against the immutable asset tree.
-    compiler = root.find("compiler")
-    if compiler is not None and compiler.get("meshdir"):
-        compiler.set(
-            "meshdir",
-            str((base_xml.parent / compiler.get("meshdir")).resolve()),
-        )
 
     for side in ("left", "right"):
         side_tree = ET.parse(sharpa_root / f"{side}.xml")
@@ -548,11 +539,10 @@ def build_unitree_sharpa_visual_xml(
 
     remove_render_only_keyframes(root)
 
-    runtime_tmpdir = os.environ.get("GMR_RUNTIME_TMPDIR", "").strip() or None
     tmp = tempfile.NamedTemporaryFile(
         prefix="h1_sharpa_visual_",
         suffix=".xml",
-        dir=runtime_tmpdir,
+        dir=str(base_xml.parent),
         delete=False,
     )
     tmp.close()
@@ -967,6 +957,64 @@ def build_object_visual_xml(base_xml, object_motion):
     return pathlib.Path(tmp.name)
 
 
+def build_static_scene_visual_xml(base_xml, scene_mujoco_xml):
+    """Append a packaged static-scene MJCF to a robot visual MJCF.
+
+    The scene package owns all mesh geometry.  Its XML is intentionally a
+    standalone worldbody, while GMR owns the robot worldbody, so this function
+    imports only the scene assets and static bodies.  Mesh paths are made
+    absolute before writing a temporary combined XML beside the robot asset;
+    consequently the published package remains portable and is never edited.
+    """
+    base_xml = pathlib.Path(base_xml)
+    scene_mujoco_xml = pathlib.Path(scene_mujoco_xml)
+    if not scene_mujoco_xml.is_file():
+        raise FileNotFoundError(f"Scene MJCF does not exist: {scene_mujoco_xml}")
+
+    tree = ET.parse(base_xml)
+    root = tree.getroot()
+    worldbody = root.find("worldbody")
+    if worldbody is None:
+        raise ValueError(f"worldbody not found in {base_xml}")
+    scene_tree = ET.parse(scene_mujoco_xml)
+    scene_root = scene_tree.getroot()
+    scene_worldbody = scene_root.find("worldbody")
+    if scene_worldbody is None:
+        raise ValueError(f"worldbody not found in scene MJCF {scene_mujoco_xml}")
+
+    asset = root.find("asset")
+    if asset is None:
+        asset = ET.Element("asset")
+        root.insert(0, asset)
+    scene_asset = scene_root.find("asset")
+    if scene_asset is not None:
+        for child in scene_asset:
+            imported = copy.deepcopy(child)
+            if imported.tag == "mesh" and imported.get("file"):
+                mesh_path = pathlib.Path(imported.attrib["file"])
+                if not mesh_path.is_absolute():
+                    mesh_path = scene_mujoco_xml.parent / mesh_path
+                if not mesh_path.is_file():
+                    raise FileNotFoundError(
+                        "Scene MJCF mesh is missing: "
+                        f"{mesh_path} (referenced by {scene_mujoco_xml})"
+                    )
+                imported.set("file", mesh_path.resolve().as_posix())
+            asset.append(imported)
+    for child in scene_worldbody:
+        worldbody.append(copy.deepcopy(child))
+
+    tmp = tempfile.NamedTemporaryFile(
+        prefix="static_scene_visual_",
+        suffix=".xml",
+        dir=str(base_xml.parent),
+        delete=False,
+    )
+    tmp.close()
+    tree.write(tmp.name, encoding="unicode")
+    return pathlib.Path(tmp.name)
+
+
 def set_equal_axes(ax, center, radius):
     ax.set_xlim(center[0] - radius, center[0] + radius)
     ax.set_ylim(center[1] - radius, center[1] + radius)
@@ -1101,6 +1149,9 @@ def render_mujoco(args):
         xml_path = base_xml_path
     if object_motion is not None:
         xml_path = build_object_visual_xml(xml_path, object_motion)
+        temp_xml_paths.append(xml_path)
+    if args.scene_mujoco_xml:
+        xml_path = build_static_scene_visual_xml(xml_path, args.scene_mujoco_xml)
         temp_xml_paths.append(xml_path)
     model = mj.MjModel.from_xml_path(str(xml_path))
     apply_robot_rgba(model, parse_rgba(args.robot_rgba))
@@ -1281,8 +1332,18 @@ def main():
     parser.add_argument("--brainco_left_mount_quat", default="0,0,0.70710678,-0.70710678")
     parser.add_argument("--brainco_right_mount_quat", default="0,0,0.70710678,-0.70710678")
     parser.add_argument("--object_motion_path", default="", help="Optional object_motion.npz with position and quat_wxyz.")
+    parser.add_argument(
+        "--scene_mujoco_xml",
+        default="",
+        help="Optional static scene MJCF exported by the scene reconstruction package.",
+    )
     args = parser.parse_args()
 
+    if args.scene_mujoco_xml and args.camera_subject_align_xy:
+        raise ValueError(
+            "--camera_subject_align_xy is incompatible with --scene_mujoco_xml; "
+            "a scene render must use the exact audited robot trajectory"
+        )
     if args.camera_mode != "custom":
         args.elevation, args.azimuth = CAMERA_PRESETS[args.camera_mode]
 

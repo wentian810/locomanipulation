@@ -1,0 +1,141 @@
+# V25: V24 visual fidelity plus conservative robot collision proxies and honest contact-constrained mj_step routing.
+# PHC keeps the scene-aware replay.  GMR uses the static reference SMPL motion
+# and CRISP-style local chair-contact alignment, so a crossed-leg pose is not
+# silently degraded by the PHC controller before robot retargeting.
+input:
+  dataset_dir: /home/jixingyu/data/animation
+  clip_filter: Ways_to_Jump_+_Sit_+_Fall_Dramatic_clip1
+  min_duration_seconds: 0
+
+output:
+  root: output_dir/sit_contact_scene_static_hard_semantic_level_v25
+
+resume:
+  skip_existing: true
+  force_phc: true
+  force_gmr: true
+
+gmr:
+  enabled: true
+  source: smoothed
+  camera_source: gvhmr
+  camera_subject_align_xy: false
+  scene_mujoco_name: scene_reconstruction_semantic_chair_v5/scene/scene_mujoco_semantic_chair.xml
+  render: true
+  composite_2x2: true
+  mujoco_gl: egl
+  scene_contact_alignment:
+    enabled: true
+    # Match GMR's source exactly: do not inherit PHC crossed-leg tracking error.
+    source_motion_name: 001_smoothed.npz
+    chair_primitives_name: semantic_chair_primitives_mujoco.json
+    body_model_root: GMR-master/assets/body_models
+    robot_xml: GMR-master/assets/unitree_g1/g1_mocap_29dof.xml
+    anchor_conda_env: vm1rs
+    gmr_conda_env: locomotion
+    output_name: robot_motion_scene_contact_aligned.pkl
+    report_name: gmr_scene_contact_alignment_report.json
+    clearance_m: 0.025
+    max_shift_m: 0.30
+    # The reference contains one short, but coherent, back-contact episode.
+    min_back_contact_coverage: 0.15
+    ramp_frames: 6
+    bridge_max_gap: 2
+
+
+  # This branch never overwrites the V22-style GMR fidelity render.  It writes
+  # an auditable robot-feasibility candidate and a separate mj_step verdict.
+  scene_physics_validation:
+    enabled: true
+    gmr_conda_env: locomotion
+    robot_xml: GMR-master/assets/unitree_g1/g1_mocap_29dof.xml
+    scene_mujoco_name: scene_reconstruction_semantic_chair_v5/scene/scene_mujoco_semantic_chair.xml
+    anchor_name: smpl_support_contacts.npz
+    seat_geom: seat_support_geom
+    clearance_m: 0.003
+    audit_report_name: gmr_scene_contact_audit_v25.json
+    audit_arrays_name: gmr_scene_contact_audit_v25.npz
+    quality_report_name: gmr_scene_physics_quality_report_v25.json
+    seat_projection:
+      enabled: true
+      required: false
+      output_name: robot_motion_scene_seat_back_contact_v25.pkl
+      report_name: gmr_seat_projection_contact_v25.json
+      clearance_m: 0.003
+      support_target_m: 0.008
+      activation_distance_m: 0.25
+      min_root_dz_m: -0.10
+      max_root_dz_m: 0.10
+      # Dense evaluation is intentional: sparse interpolation previously hid
+      # collisions between sampled frames.
+      sample_stride: 1
+      maxiter: 350
+    dynamic_validation:
+      enabled: true
+      source: seat_projected
+      output_name: robot_motion_dynamic_contact_harness_v25.pkl
+      report_name: gmr_dynamic_contact_harness_v25.json
+      substeps: 24
+      joint_kp: 160.0
+      joint_kd: 10.0
+      joint_torque_limit: 100.0
+      root_pos_kp: 30000.0
+      root_pos_kd: 1000.0
+      root_force_limit: 4000.0
+      root_rot_kp: 600.0
+      root_rot_kd: 60.0
+      root_torque_limit: 600.0
+      max_penetration_m: 0.015
+      max_root_rmse_m: 0.08
+      max_joint_median_rad: 0.20
+
+scene:
+  enabled: true
+  required: true
+  backend: videomimic_nksr
+  source_motion: smoothed
+  physics_motion: final
+  output_subdir: scene_reconstruction_semantic_chair_v5
+  work_root: scene_work/sit_contact_pipeline_v22
+  camera:
+    mode: fixed
+    source: gvhmr
+    validate_static: true
+    canonicalization: static_hard
+  videomimic:
+    root: external/VideoMimic/real2sim
+    recon_env: vm1recon
+    human_env: vm1rs
+    gender: auto
+    max_frames: 0
+    meshification_method: nksr
+  robot_bridge:
+    enabled: true
+    source_output_root: output_dir/sit_contact_scene_static_hard_semantic_level_v13
+    source_scene_subdir: scene_reconstruction_semantic_chair_v3
+    motion_name: human_motion_static_hard.npz
+    camera_name: gvhmr_camera_static_hard.npz
+  semantic_chair:
+    enabled: true
+    source_package_subdir: scene_reconstruction_semantic_chair_v3
+    swap_horizontal_axes: true
+    level_seat: true
+    back_sign: 1
+    phc_backrest_collision: true
+  isaac:
+    enabled: true
+    collision_mode: semantic_seat_backrest_support
+    allow_global_floor_fix: false
+  runtime:
+    gpu: 4
+    max_parallel_clips: 1
+    timeout_seconds: 3600
+
+quality_evaluation:
+  enabled: false
+  run_after_stages: []
+
+product:
+  enabled: false
+  export_after_stages: []
+

@@ -1,0 +1,75 @@
+# Fixed-camera VideoMimic/NKSR pilot. `all` first writes human-pre outputs,
+# runs the optional scene sidecar, then performs unchanged human-post PHC/GMR.
+# CRISP remains the fallback named in the scene quality report.
+
+input:
+  dataset_dir: dataset_new6
+  clip_filter: ""
+
+output:
+  root: output_dir/dataset_new6_hand4wholepp_directmano_gmr_sharpa_aligned
+
+human:
+  backend: hand4wholepp
+  constraint_profile: conservative
+  hand_batch_size: 1
+  hand_crop_tracking:
+    mode: flow_kalman
+    max_gap: 8
+    max_prediction_gap: 2
+    direct_observation_quality: 0.75
+  visible_hand_refine:
+    enabled: true
+    fit_partition: non_tip
+    holdout_min_keypoints: 3
+    holdout_max_relative_regression_px: 0.0
+
+phc:
+  enabled: true
+
+gmr:
+  enabled: true
+  hand_model: sharpa
+  source: final
+  render: true
+  composite_2x2: true
+
+scene:
+  enabled: true
+  # A failed optional sidecar preserves existing human/robot products.
+  required: false
+  backend: videomimic_nksr
+  source_motion: smoothed
+  physics_motion: final
+  work_root: scene_work/videomimic
+  camera:
+    mode: fixed
+    source: gvhmr
+    validate_static: true
+    canonicalization: static_hard
+  videomimic:
+    root: external/VideoMimic/real2sim
+    recon_env: vm1recon
+    human_env: vm1rs
+    gender: auto
+    max_frames: 0
+    meshification_method: nksr
+  runtime:
+    gpu: 2
+    max_parallel_clips: 1
+    timeout_seconds: 3600
+
+# Current quality evaluation expects the post-GMR robot artefact; it therefore
+# remains after `all`, not immediately after the standalone `scene` stage.
+quality_evaluation:
+  enabled: true
+  run_after_stages: [all]
+
+product:
+  enabled: true
+  root: assets/dataset_new6_human_scene_sharpa
+  export_after_stages: [all]
+  include_camera: true
+  include_preview: true
+  require_preview: true
+  object_policy: exclude

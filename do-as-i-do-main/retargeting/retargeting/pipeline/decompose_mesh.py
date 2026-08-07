@@ -227,6 +227,8 @@ def main(
     threshold: float = 0.05,
     max_convex_hull: int = 32,
     max_ch_vertex: int = 256,
+    preprocess_resolution: int = 100,
+    simplify_faces: int = 0,
     shrink: float = 1.0,
     thicken: float = 0,
     dilate: float = 0,
@@ -307,6 +309,23 @@ def main(
                     process=False,
                     skip_materials=True,
                 )
+                if simplify_faces > 0 and len(mesh.faces) > simplify_faces:
+                    original_faces = len(mesh.faces)
+                    try:
+                        mesh = mesh.simplify_quadric_decimation(
+                            face_count=simplify_faces
+                        )
+                    except ModuleNotFoundError as exc:
+                        raise RuntimeError(
+                            "Mesh simplification requested but fast-simplification "
+                            "is unavailable. Install it with "
+                            "`pip install fast-simplification`."
+                        ) from exc
+                    logger.info(
+                        "Simplified collision input from {} to {} faces.",
+                        original_faces,
+                        len(mesh.faces),
+                    )
                 if shrink != 1.0:
                     center = mesh.centroid
                     mesh.vertices = (mesh.vertices - center) * shrink + center
@@ -340,12 +359,14 @@ def main(
                             "Install with `pip install coacd`."
                         )
                     logger.info(
-                        "Using CoACD decomposition (threshold={}, max_hulls={}).",
-                        threshold, max_convex_hull,
+                        "Using CoACD decomposition (threshold={}, max_hulls={}, "
+                        "preprocess_resolution={}).",
+                        threshold, max_convex_hull, preprocess_resolution,
                     )
                     hulls = coacd_convex_decomp(
                         mesh, threshold=threshold,
                         max_convex_hull=max_convex_hull, max_ch_vertex=max_ch_vertex,
+                        preprocess_resolution=preprocess_resolution,
                     )
 
                 if not hulls:

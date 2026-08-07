@@ -1,0 +1,75 @@
+# V18: final sit-contact replay. The V4 visual chair has the corrected backrest
+# axis; the Isaac seat proxy is gravity-level, world-identical to that visual
+# seat, and independently verified to support a dynamic PhysX sphere.
+
+input:
+  dataset_dir: /home/jixingyu/data/animation
+  clip_filter: Ways_to_Jump_+_Sit_+_Fall_Dramatic_clip1
+  min_duration_seconds: 0
+
+output:
+  root: output_dir/sit_contact_scene_static_hard_semantic_level_v18
+
+resume:
+  skip_existing: true
+  force_phc: true
+  force_gmr: true
+
+gmr:
+  enabled: true
+  source: phc_smoothed
+  camera_source: gvhmr
+  camera_subject_align_xy: false
+  scene_mujoco_name: scene_reconstruction_semantic_chair_v4/scene/scene_mujoco_semantic_chair.xml
+  render: true
+  composite_2x2: true
+  mujoco_gl: egl
+
+scene:
+  enabled: true
+  required: true
+  backend: videomimic_nksr
+  source_motion: smoothed
+  physics_motion: final
+  output_subdir: scene_reconstruction_semantic_chair_v4
+  work_root: scene_work/sit_contact_pipeline_v18
+  camera:
+    mode: fixed
+    source: gvhmr
+    validate_static: true
+    canonicalization: static_hard
+  videomimic:
+    root: external/VideoMimic/real2sim
+    recon_env: vm1recon
+    human_env: vm1rs
+    gender: auto
+    max_frames: 0
+    meshification_method: nksr
+  robot_bridge:
+    enabled: true
+    source_output_root: output_dir/sit_contact_scene_static_hard_semantic_level_v13
+    source_scene_subdir: scene_reconstruction_semantic_chair_v3
+    motion_name: human_motion_static_hard.npz
+    camera_name: gvhmr_camera_static_hard.npz
+  semantic_chair:
+    enabled: true
+    source_package_subdir: scene_reconstruction_semantic_chair_v3
+    swap_horizontal_axes: true
+    level_seat: true
+    back_sign: 1
+  isaac:
+    enabled: true
+    collision_mode: semantic_seat_support_only
+    allow_global_floor_fix: false
+  runtime:
+    gpu: 4
+    max_parallel_clips: 1
+    timeout_seconds: 3600
+
+quality_evaluation:
+  enabled: false
+  run_after_stages: []
+
+product:
+  enabled: false
+  export_after_stages: []
